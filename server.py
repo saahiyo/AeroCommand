@@ -394,7 +394,9 @@ def heartbeat_monitor():
 
 def input_thread_func():
     global target_client
-    time.sleep(1)  # Wait for Flask to start
+    print(f"\n{C.CYAN}[*] Starting AeroCommand C2... Waiting 5s for active clients to reconnect...{C.RESET}")
+    time.sleep(5)  # Wait for Flask startup + incoming client reconnects
+    os.system("cls" if os.name == "nt" else "clear")
     show_banner()
     show_help()
     show_clients()
