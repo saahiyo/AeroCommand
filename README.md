@@ -129,6 +129,8 @@ Once the server CLI interface is active (`💀 RAT >`), the following commands a
 | Command | Description |
 |---|---|
 | `kill` | Initiates self-termination and clean exit on client |
+| `db clients` | Displays historical client registration records from SQLite database |
+| `db logs [limit]` | Queries recent command execution outputs from SQLite database |
 | `help` | Displays command list and usage |
 | `clear` | Clears local terminal screen |
 | `exit` | Shuts down C2 server process |
