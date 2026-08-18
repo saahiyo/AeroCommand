@@ -1,6 +1,6 @@
-# Remote Administration Framework (C2 & Client)
+# AeroCommand
 
-A lightweight client-server architecture built in Python for remote endpoint monitoring, administration, and security telemetry testing.
+A lightweight client-server framework built in Python for remote endpoint monitoring, administration, and security telemetry testing.
 
 ---
 
