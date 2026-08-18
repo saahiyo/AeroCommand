@@ -20,6 +20,8 @@ dist/
 # Captured loot and temporary artifacts
 loot/
 *.png
+!assets/
+!assets/*.png
 .wupdate.lock
 
 # IDE and editor settings
