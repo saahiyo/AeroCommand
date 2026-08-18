@@ -6,6 +6,7 @@ import os
 import time
 import json
 import sqlite3
+import sys
 from datetime import datetime
 
 # Suppress Flask logging
@@ -394,11 +395,20 @@ def heartbeat_monitor():
 
 def input_thread_func():
     global target_client
-    print(f"\n{C.CYAN}[*] Starting AeroCommand C2... Waiting 5s for active clients to reconnect...{C.RESET}")
-    time.sleep(5)  # Wait for Flask startup + incoming client reconnects
-    os.system("cls" if os.name == "nt" else "clear")
+    time.sleep(0.5)  # Brief wait for Flask listener to bind
     show_banner()
     show_help()
+
+    # Initial reconnection window
+    sys.stdout.write(f"\r{C.CYAN}[*] Waiting 5s for active endpoints to reconnect...{C.RESET}")
+    sys.stdout.flush()
+    for i in range(5, 0, -1):
+        sys.stdout.write(f"\r{C.CYAN}[*] Waiting {i}s for active endpoints to reconnect...{C.RESET}")
+        sys.stdout.flush()
+        time.sleep(1)
+
+    sys.stdout.write("\r" + " " * 65 + "\r")  # Clear timer line
+    sys.stdout.flush()
     show_clients()
 
     while True:
