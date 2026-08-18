@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="AeroCommand Banner" width="100%">
+</p>
+
 # AeroCommand
 
 A lightweight client-server framework built in Python for remote endpoint monitoring, administration, and security telemetry testing.
