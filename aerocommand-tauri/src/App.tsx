@@ -128,8 +128,10 @@ export default function App() {
   const navHistoryRef = useRef<string[]>([]);
   const navCounterRef = useRef(0);
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Directory content cache: path -> { fileList, truncated, totalCount }
+  // Directory content cache: normalizedPath -> { items, truncated, count }
   const dirCacheRef = useRef<Map<string, { items: FileEntry[], truncated: boolean, count: number }>>(new Map());
+  // Normalize a path string to a consistent cache key (forward slashes, lowercase drive letter)
+  const normPath = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 
   // File Preview Modal State
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -314,8 +316,9 @@ export default function App() {
         const items = data.items || [];
         const truncated = data.truncated || false;
         const count = data.count || 0;
-        // Store in cache for instant back navigation
-        if (path) dirCacheRef.current.set(path, { items, truncated, count });
+        // Store in cache by RESOLVED path (what the server actually returned)
+        // This means SPECIAL:Desktop gets cached as 'c:/users/shakir/desktop'
+        if (path) dirCacheRef.current.set(normPath(path), { items, truncated, count });
         setCurrentPath(path);
         setFileList(items);
         setFileTruncated(truncated);
@@ -383,30 +386,34 @@ export default function App() {
     executeCommand('ls DRIVES', true);
   };
 
-  const browseFolder = (path: string) => {
+  const browseFolder = (path: string, forceRefresh = false) => {
     if (clients.length === 0) return;
-    // Push current path to history before navigating
-    if (currentPath && currentPath !== path) {
+    // Push current path to history before navigating (don't push if same path)
+    if (currentPath && normPath(currentPath) !== normPath(path)) {
       navHistoryRef.current.push(currentPath);
     }
-    // Check cache — serve instantly without a network round-trip
-    const cached = dirCacheRef.current.get(path);
-    if (cached) {
-      setCurrentPath(path);
-      setFileList(cached.items);
-      setFileTruncated(cached.truncated);
-      setFileTotalCount(cached.count);
-      setFileError('');
-      setIsFilesLoading(false);
-      return;
+    // Check cache — serve instantly unless forceRefresh is set
+    if (!forceRefresh) {
+      const cacheKey = normPath(path);
+      const cached = dirCacheRef.current.get(cacheKey);
+      if (cached) {
+        setCurrentPath(path);
+        setFileList(cached.items);
+        setFileTruncated(cached.truncated);
+        setFileTotalCount(cached.count);
+        setFileError('');
+        setIsFilesLoading(false);
+        return;
+      }
+    } else {
+      // Force refresh: evict this path from cache so fresh data is stored
+      dirCacheRef.current.delete(normPath(path));
     }
-    // Debounce: increment nav counter — older responses will be discarded
+    // No cache hit — send network request
     navCounterRef.current += 1;
-    // Optimistic UI: show loading immediately
     setIsFilesLoading(true);
     setFileError('');
     setFileList([]);
-    // Set loading timeout — auto-clear after 15s
     if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
     loadingTimerRef.current = setTimeout(() => {
       setIsFilesLoading(false);
@@ -423,7 +430,7 @@ export default function App() {
         listDrives();
       } else {
         // Check cache first — instant back navigation without network round-trip
-        const cached = dirCacheRef.current.get(prevPath);
+        const cached = dirCacheRef.current.get(normPath(prevPath));
         if (cached) {
           setCurrentPath(prevPath);
           setFileList(cached.items);
@@ -1458,7 +1465,7 @@ export default function App() {
                           <span>DRIVES</span>
                         </button>
                         <button 
-                          onClick={() => browseFolder(currentPath === 'System Drives' ? '.' : (currentPath || '.'))}
+                          onClick={() => browseFolder(currentPath === 'System Drives' ? '.' : (currentPath || '.'), true)}
                           className="px-3 py-1.5 bg-slate-800 border border-c2border rounded text-[10px] font-bold hover:bg-slate-700 transition-colors flex items-center space-x-1.5"
                         >
                           <RefreshCw className={`w-3 h-3 ${isFilesLoading ? 'animate-spin' : ''}`} />
