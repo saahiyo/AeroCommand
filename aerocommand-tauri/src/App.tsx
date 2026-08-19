@@ -723,8 +723,8 @@ export default function App() {
         <div>
           {/* Windows-style Header */}
           <div className="flex items-center space-x-2.5 px-2 py-3 mb-2 border-b border-c2border/60">
-            <div className="w-8 h-8 rounded-lg bg-c2accent flex items-center justify-center shadow-sm shrink-0">
-              <Zap className="w-4 h-4 text-white" />
+            <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center shrink-0">
+              <img src="/logo.png" alt="AeroCommand Logo" className="w-full h-full object-contain" />
             </div>
             <div>
               <span className="font-bold text-sm text-white tracking-tight block">AeroCommand</span>
@@ -866,15 +866,54 @@ export default function App() {
               {serverRunning ? <Square className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}
               <span>{serverRunning ? 'Stop Server' : 'Start Server'}</span>
             </button>
+
+            {/* Operator PFP Icon */}
+            <img 
+              src="/pfp.png" 
+              alt="Operator Profile" 
+              className="w-7 h-7 rounded-full object-cover border border-c2border shrink-0 ml-1" 
+            />
           </div>
         </header>
 
         {/* MAIN CONTENT AREA */}
         <main className="flex-1 overflow-auto p-5 space-y-4">
             
-            {/* ==================== 1. DASHBOARD VIEW (STOVEST STYLE) ==================== */}
+            {/* ==================== 1. DASHBOARD VIEW ==================== */}
             {activeTab === 'dashboard' && (
-              <div className="space-y-5">
+              <div className="space-y-4">
+                
+                {/* WELCOME BANNER WITH ROUNDED PFP */}
+                <div className="flex items-center justify-between p-3.5 bg-c2card border border-c2border rounded-xl shadow-card">
+                  <div className="flex items-center space-x-3.5">
+                    <img 
+                      src="/pfp.png" 
+                      alt="Operator Profile" 
+                      className="w-11 h-11 rounded-full object-cover border-2 border-c2accent shadow-sm" 
+                    />
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <h2 className="text-sm font-bold text-white tracking-tight">Welcome, Operator</h2>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-c2accent/15 border border-c2accent/30 text-c2cyan font-mono">
+                          ROOT
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Here's your live C2 fleet telemetry & command grid</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-4 text-xs font-mono">
+                    <div className="text-right hidden sm:block">
+                      <span className="text-[10px] text-slate-500 block uppercase font-bold">Active Fleet</span>
+                      <span className="text-white font-bold">{clients.length} Endpoint{clients.length === 1 ? '' : 's'} Online</span>
+                    </div>
+                    <div className="h-7 w-[1px] bg-c2border hidden sm:block" />
+                    <div className="text-right">
+                      <span className="text-[10px] text-slate-500 block uppercase font-bold">Target</span>
+                      <span className="text-c2cyan font-bold">{(clients.find(c => c.id === selectedClientId) || clients[0])?.host || 'None'}</span>
+                    </div>
+                  </div>
+                </div>
                 
                 {/* ROW 1: HERO METRIC + MINI TARGET CARDS */}
                 <div className="grid grid-cols-12 gap-4">
