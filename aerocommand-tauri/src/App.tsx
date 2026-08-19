@@ -883,35 +883,21 @@ export default function App() {
             {activeTab === 'dashboard' && (
               <div className="space-y-4">
                 
-                {/* WELCOME BANNER WITH ROUNDED PFP */}
-                <div className="flex items-center justify-between p-3.5 bg-c2card border border-c2border rounded-xl shadow-card">
-                  <div className="flex items-center space-x-3.5">
-                    <img 
-                      src="/pfp.png" 
-                      alt="Operator Profile" 
-                      className="w-11 h-11 rounded-full object-cover border-2 border-c2accent shadow-sm" 
-                    />
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <h2 className="text-sm font-bold text-white tracking-tight">Welcome, Operator</h2>
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-c2accent/15 border border-c2accent/30 text-c2cyan font-mono">
-                          ROOT
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">Here's your live C2 fleet telemetry & command grid</p>
+                {/* WELCOME HEADER */}
+                <div className="flex items-center space-x-3.5 pt-1 pb-1">
+                  <img 
+                    src="/pfp.png" 
+                    alt="Operator Profile" 
+                    className="w-11 h-11 rounded-full object-cover border-2 border-c2accent shadow-sm" 
+                  />
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <h2 className="text-base font-bold text-white tracking-tight">Welcome, Operator</h2>
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-c2accent/15 border border-c2accent/30 text-c2cyan font-mono">
+                        ROOT
+                      </span>
                     </div>
-                  </div>
-
-                  <div className="flex items-center space-x-4 text-xs font-mono">
-                    <div className="text-right hidden sm:block">
-                      <span className="text-[10px] text-slate-500 block uppercase font-bold">Active Fleet</span>
-                      <span className="text-white font-bold">{clients.length} Endpoint{clients.length === 1 ? '' : 's'} Online</span>
-                    </div>
-                    <div className="h-7 w-[1px] bg-c2border hidden sm:block" />
-                    <div className="text-right">
-                      <span className="text-[10px] text-slate-500 block uppercase font-bold">Target</span>
-                      <span className="text-c2cyan font-bold">{(clients.find(c => c.id === selectedClientId) || clients[0])?.host || 'None'}</span>
-                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">Here's your live C2 fleet telemetry & command grid</p>
                   </div>
                 </div>
                 
