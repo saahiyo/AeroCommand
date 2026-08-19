@@ -749,13 +749,13 @@ export default function App() {
                 <Tooltip key={item.id} text={item.tip} position="right">
                   <button
                     onClick={() => setActiveTab(item.id as any)}
-                    className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded text-sm font-medium transition-colors ${
+                    className={`w-full flex items-center space-x-3 px-4 py-2.5 rounded text-sm font-semibold transition-all ${
                       isActive 
-                        ? 'bg-c2accent text-slate-900 font-semibold shadow-sm' 
-                        : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                        ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-bold shadow-lg shadow-blue-500/25 border-l-4 border-l-white' 
+                        : 'text-slate-300 hover:bg-slate-900 hover:text-white'
                     }`}
                   >
-                    <Icon className="w-4 h-4" />
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-400'}`} />
                     <span>{item.label}</span>
                   </button>
                 </Tooltip>
@@ -849,12 +849,12 @@ export default function App() {
                   const Icon = stat.icon;
                   return (
                     <Tooltip key={idx} text={stat.tip} position="top">
-                      <div className="bg-c2card border border-c2border p-4 rounded shadow-sm w-full">
-                        <div className="flex items-center justify-between text-slate-400 mb-2">
-                          <span className="text-xs font-medium">{stat.label}</span>
+                      <div className="bg-c2card border border-c2border hover:border-c2accent/50 p-4 rounded shadow-md w-full transition-all">
+                        <div className="flex items-center justify-between text-slate-300 mb-2">
+                          <span className="text-xs font-bold uppercase tracking-wider">{stat.label}</span>
                           <Icon className={`w-4 h-4 ${stat.color}`} />
                         </div>
-                        <div className="text-2xl font-bold font-mono tracking-tight">{stat.val}</div>
+                        <div className="text-3xl font-extrabold text-white font-mono tracking-tight">{stat.val}</div>
                       </div>
                     </Tooltip>
                   );

@@ -7,14 +7,18 @@ export default {
   theme: {
     extend: {
       colors: {
-        c2bg: "#0B0F19",
-        c2sidebar: "#111827",
-        c2card: "#1E293B",
-        c2border: "#334155",
-        c2accent: "#0EA5E9",
-        c2accenthover: "#0284C7",
-        c2success: "#10B981",
-        c2danger: "#EF4444",
+        c2bg: "#040711",          // Deep Pitch Black-Blue
+        c2sidebar: "#070C18",     // High-contrast deep panel
+        c2card: "#0B1326",        // Crisp Dark Navy-Black Card
+        c2border: "#1E2E4A",      // High-contrast visible border
+        c2borderlight: "#2E4368", // Lighter subtle divider
+        c2accent: "#00A3FF",      // Vivid Electric Blue
+        c2accenthover: "#0084D6", // Hover blue
+        c2cyan: "#38BDF8",        // Bright Sky Blue
+        c2white: "#FFFFFF",       // Pure White
+        c2success: "#10B981",     // Emerald
+        c2danger: "#EF4444",      // Red
+        c2warning: "#F59E0B",     // Amber
       },
       borderRadius: {
         DEFAULT: '4px',
