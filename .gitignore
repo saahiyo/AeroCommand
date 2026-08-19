@@ -53,6 +53,11 @@ aerocommand.db
 **/*.local
 **/gen/schemas/
 
+# Keys and certificates
+*.pem
+*.key
+*.crt
+
 # Environment configuration files
 .env
 .env.*

