@@ -6,26 +6,36 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['"Plus Jakarta Sans"', 'Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'Consolas', 'monospace'],
+      },
       colors: {
-        c2bg: "#040711",          // Deep Pitch Black-Blue
-        c2sidebar: "#070C18",     // High-contrast deep panel
-        c2card: "#0B1326",        // Crisp Dark Navy-Black Card
-        c2border: "#1E2E4A",      // High-contrast visible border
-        c2borderlight: "#2E4368", // Lighter subtle divider
-        c2accent: "#00A3FF",      // Vivid Electric Blue
-        c2accenthover: "#0084D6", // Hover blue
-        c2cyan: "#38BDF8",        // Bright Sky Blue
-        c2white: "#FFFFFF",       // Pure White
-        c2success: "#10B981",     // Emerald
-        c2danger: "#EF4444",      // Red
+        c2bg: "#0A0E17",          // Deep obsidian canvas
+        c2sidebar: "#0A0E17",     // Matching flush sidebar
+        c2card: "#121826",        // Smooth rounded dark card
+        c2cardhover: "#172033",   // Card hover surface
+        c2pill: "#161E2E",        // Pill input / button surface
+        c2border: "#1E2A3F",      // Crisp border line
+        c2borderlight: "#2B3B57", // Highlight border line
+        c2accent: "#0075FF",      // Reference Electric Blue
+        c2accenthover: "#0062D6", // Hover blue
+        c2cyan: "#38BDF8",        // Neon Cyan
+        c2success: "#10B981",     // Mint Emerald
+        c2danger: "#F43F5E",      // Rose Red
         c2warning: "#F59E0B",     // Amber
       },
       borderRadius: {
-        DEFAULT: '4px',
-        sm: '2px',
-        md: '4px',
-        lg: '6px',
-        xl: '8px',
+        '3xl': '24px',
+        '2xl': '18px',
+        'xl': '14px',
+        'lg': '10px',
+        'pill': '9999px',
+      },
+      boxShadow: {
+        'card': '0 4px 20px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(30, 42, 63, 0.6)',
+        'pill': '0 4px 14px 0 rgba(0, 117, 255, 0.35)',
+        'glow': '0 0 25px rgba(0, 117, 255, 0.25)',
       }
     },
   },

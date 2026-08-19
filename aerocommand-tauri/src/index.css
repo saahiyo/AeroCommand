@@ -3,27 +3,27 @@
 @tailwind utilities;
 
 body {
-  background-color: #040711;
+  background-color: #0A0E17;
   color: #FFFFFF;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: "Plus Jakarta Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
   user-select: none;
 }
 
-/* Custom scrollbar for high-contrast aesthetic */
+/* Custom scrollbar for modern rounded UI */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: #040711;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1E2E4A;
-  border-radius: 3px;
-  border: 1px solid rgba(0, 163, 255, 0.15);
+  background: #1E2A3F;
+  border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #00A3FF;
-  box-shadow: 0 0 8px rgba(0, 163, 255, 0.5);
+  background: #0075FF;
 }
