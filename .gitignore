@@ -22,6 +22,7 @@ loot/
 *.png
 !assets/
 !assets/*.png
+!aerocommand-tauri/public/*.png
 .wupdate.lock
 
 # IDE and editor settings

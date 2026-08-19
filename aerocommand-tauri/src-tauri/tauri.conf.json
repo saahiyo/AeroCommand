@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "aerocommand-tauri",
+  "productName": "AeroCommand Admin",
   "version": "0.1.0",
   "identifier": "com.ubuntu.aerocommand-tauri",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "aerocommand-tauri",
+        "title": "AeroCommand Admin",
         "width": 800,
         "height": 600
       }

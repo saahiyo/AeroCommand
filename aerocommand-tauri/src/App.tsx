@@ -228,12 +228,12 @@ export default function App() {
         <div>
           {/* Header */}
           <div className="p-5 border-b border-c2border flex items-center space-x-3">
-            <div className="h-8 w-8 bg-c2accent flex items-center justify-center font-bold text-slate-900 rounded">
-              AC
+            <div className="h-10 w-10 flex items-center justify-center overflow-hidden">
+              <img src="/logo.png" alt="AeroCommand Logo" className="h-full w-full object-contain" />
             </div>
             <div>
-              <h1 className="font-bold tracking-wider text-sm">AEROCAPS</h1>
-              <p className="text-xs text-slate-400">Command & Control v3.5</p>
+              <h1 className="font-bold tracking-wider text-sm text-slate-100">AeroCommand Admin</h1>
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest">Command & Control v3.5</p>
             </div>
           </div>
 
