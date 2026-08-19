@@ -202,11 +202,6 @@ export default function App() {
 
         backendLogs.forEach(log => {
           if (log.status === 'SUCCESS' && !currentPrintedIds.has(log.id)) {
-            terminalUpdates.push(`[+] Result from ${log.client_id}:`);
-            terminalUpdates.push(log.output);
-            currentPrintedIds.add(log.id);
-            hasNewPrinted = true;
-
             // 1. If this is a file listing payload, parse it for the file explorer
             if (log.output.startsWith('[JSON_FILES]') || log.command.startsWith('ls') || log.command === 'dir') {
               parseFileList(log.output);
@@ -241,6 +236,20 @@ export default function App() {
                 setCurrentPath(trimmed);
               }
             }
+
+            // ONLY print to the interactive terminal if it's NOT an internal GUI background payload
+            const isInternalGuiJson = 
+              log.output.startsWith('[JSON_FILES]') ||
+              log.output.startsWith('[JSON_PREVIEW]') ||
+              log.output.startsWith('[JSON_PROCS]');
+
+            if (!isInternalGuiJson) {
+              terminalUpdates.push(`[+] Result from ${log.client_id}:`);
+              terminalUpdates.push(log.output);
+            }
+
+            currentPrintedIds.add(log.id);
+            hasNewPrinted = true;
           }
         });
 
@@ -362,7 +371,7 @@ export default function App() {
       setIsFilesLoading(false);
       setFileError('Loading timed out. The client may be unreachable.');
     }, 15000);
-    executeCommand('ls DRIVES');
+    executeCommand('ls DRIVES', true);
   };
 
   const browseFolder = (path: string) => {
@@ -383,7 +392,7 @@ export default function App() {
       setIsFilesLoading(false);
       setFileError('Loading timed out. The client may be unreachable.');
     }, 15000);
-    executeCommand(`ls "${path}"`);
+    executeCommand(`ls "${path}"`, true);
   };
 
   const goBack = () => {
@@ -403,7 +412,7 @@ export default function App() {
           setIsFilesLoading(false);
           setFileError('Loading timed out. The client may be unreachable.');
         }, 15000);
-        executeCommand(`ls "${prevPath}"`);
+        executeCommand(`ls "${prevPath}"`, true);
       }
     }
   };
