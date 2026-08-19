@@ -205,12 +205,12 @@ export default function App() {
             currentPrintedIds.add(log.id);
             hasNewPrinted = true;
 
-            // If this was an 'ls' command, parse it for the file explorer
-            if (log.command.startsWith('ls') || log.command === 'dir') {
+            // 1. If this is a file listing payload, parse it for the file explorer
+            if (log.output.startsWith('[JSON_FILES]') || log.command.startsWith('ls') || log.command === 'dir') {
               parseFileList(log.output);
             }
-            // If this was a 'preview' command, parse it for the preview modal
-            if (log.command.startsWith('preview ') || log.output.startsWith('[JSON_PREVIEW]')) {
+            // 2. If this is a preview payload, parse it for the preview modal
+            else if (log.output.startsWith('[JSON_PREVIEW]') || log.command.startsWith('preview ')) {
               try {
                 const jsonStr = log.output.replace('[JSON_PREVIEW]', '');
                 const parsed = JSON.parse(jsonStr);
@@ -221,12 +221,8 @@ export default function App() {
                 setIsPreviewLoading(false);
               }
             }
-            // If this was a 'pwd' command, update the current path
-            if (log.command === 'pwd') {
-              setCurrentPath(log.output.trim());
-            }
-            // If this was a 'ps' command, parse it for the process manager
-            if (log.command === 'ps' && log.output.startsWith('[JSON_PROCS]')) {
+            // 3. If this is a process manager payload, parse it
+            else if (log.output.startsWith('[JSON_PROCS]') || log.command === 'ps') {
               try {
                 const jsonStr = log.output.replace('[JSON_PROCS]', '');
                 const procs = JSON.parse(jsonStr);
@@ -234,6 +230,13 @@ export default function App() {
                 setIsProcessesLoading(false);
               } catch (e) {
                 console.error("Failed to parse processes", e);
+              }
+            }
+            // 4. If this was a 'pwd' command, only set if it is a clean directory string
+            else if (log.command === 'pwd') {
+              const trimmed = log.output.trim();
+              if (trimmed && !trimmed.startsWith('[') && !trimmed.startsWith('{') && !trimmed.includes('\n') && trimmed.length < 300) {
+                setCurrentPath(trimmed);
               }
             }
           }
@@ -274,10 +277,9 @@ export default function App() {
         fetchProcesses();
       }
     } else if (activeTab === 'files') {
-      // Auto-fetch current path only if not already set
-      if (!currentPath && !isFilesLoading) {
-        setIsFilesLoading(true);
-        executeCommand('pwd', true);
+      // Auto-browse initial folder if not loaded
+      if (!currentPath && !isFilesLoading && fileList.length === 0) {
+        browseFolder('.');
       }
     }
   }, [activeTab, clients.length]);
@@ -406,8 +408,8 @@ export default function App() {
 
   // Helper: render clickable breadcrumbs from the current path
   const renderBreadcrumbs = () => {
-    if (!currentPath || currentPath === 'System Drives') {
-      return <span className="text-[10px] font-mono text-slate-500 mt-0.5">{currentPath || 'Click refresh to start browsing...'}</span>;
+    if (!currentPath || currentPath === 'System Drives' || currentPath.startsWith('[') || currentPath.startsWith('{') || currentPath.length > 260) {
+      return <span className="text-[10px] font-mono text-slate-500 mt-0.5">{currentPath === 'System Drives' ? 'System Drives' : 'Click refresh to start browsing...'}</span>;
     }
     // Split path into segments (handle both / and \ separators)
     const normalized = currentPath.replace(/\\/g, '/');
