@@ -128,6 +128,8 @@ export default function App() {
   const navHistoryRef = useRef<string[]>([]);
   const navCounterRef = useRef(0);
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Directory content cache: path -> { fileList, truncated, totalCount }
+  const dirCacheRef = useRef<Map<string, { items: FileEntry[], truncated: boolean, count: number }>>(new Map());
 
   // File Preview Modal State
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -308,10 +310,16 @@ export default function App() {
     if (output.startsWith('[JSON_FILES]')) {
       try {
         const data = JSON.parse(output.replace('[JSON_FILES]', ''));
-        setCurrentPath(data.path || '');
-        setFileList(data.items || []);
-        setFileTruncated(data.truncated || false);
-        setFileTotalCount(data.count || 0);
+        const path = data.path || '';
+        const items = data.items || [];
+        const truncated = data.truncated || false;
+        const count = data.count || 0;
+        // Store in cache for instant back navigation
+        if (path) dirCacheRef.current.set(path, { items, truncated, count });
+        setCurrentPath(path);
+        setFileList(items);
+        setFileTruncated(truncated);
+        setFileTotalCount(count);
         setIsFilesLoading(false);
         return;
       } catch (e) {
@@ -377,12 +385,23 @@ export default function App() {
 
   const browseFolder = (path: string) => {
     if (clients.length === 0) return;
-    // Debounce: increment nav counter — older responses will be discarded
-    navCounterRef.current += 1;
     // Push current path to history before navigating
     if (currentPath && currentPath !== path) {
       navHistoryRef.current.push(currentPath);
     }
+    // Check cache — serve instantly without a network round-trip
+    const cached = dirCacheRef.current.get(path);
+    if (cached) {
+      setCurrentPath(path);
+      setFileList(cached.items);
+      setFileTruncated(cached.truncated);
+      setFileTotalCount(cached.count);
+      setFileError('');
+      setIsFilesLoading(false);
+      return;
+    }
+    // Debounce: increment nav counter — older responses will be discarded
+    navCounterRef.current += 1;
     // Optimistic UI: show loading immediately
     setIsFilesLoading(true);
     setFileError('');
@@ -403,7 +422,18 @@ export default function App() {
       if (prevPath === 'System Drives') {
         listDrives();
       } else {
-        // Don't push current path to history again (goBack already popped)
+        // Check cache first — instant back navigation without network round-trip
+        const cached = dirCacheRef.current.get(prevPath);
+        if (cached) {
+          setCurrentPath(prevPath);
+          setFileList(cached.items);
+          setFileTruncated(cached.truncated);
+          setFileTotalCount(cached.count);
+          setFileError('');
+          setIsFilesLoading(false);
+          return;
+        }
+        // Fallback: re-fetch if not in cache
         navCounterRef.current += 1;
         setIsFilesLoading(true);
         setFileError('');
