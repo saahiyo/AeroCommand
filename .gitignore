@@ -52,3 +52,9 @@ aerocommand.db
 **/dist-ssr/
 **/*.local
 **/gen/schemas/
+
+# Environment configuration files
+.env
+.env.*
+*.env
+!.env.example
