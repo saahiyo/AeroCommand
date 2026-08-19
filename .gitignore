@@ -38,3 +38,16 @@ $RECYCLE.BIN/
 .DS_Store
 
 aerocommand.db
+*.db
+
+.pnpm-store
+# aerocommand-tauri folder should NOT be ignored
+# aerocommand-tauri
+
+# Tauri & Node build artifacts (if committing from root)
+**/node_modules/
+**/src-tauri/target/
+**/dist/
+**/dist-ssr/
+**/*.local
+**/gen/schemas/
