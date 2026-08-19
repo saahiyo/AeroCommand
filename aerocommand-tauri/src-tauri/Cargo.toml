@@ -29,4 +29,5 @@ tiny_http = "0.12"
 
 rsa = { version = "0.9", features = ["pem"] }
 aes-gcm = "0.10"
+sha2 = "0.10"
 rand = "0.8"

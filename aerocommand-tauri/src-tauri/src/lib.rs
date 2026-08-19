@@ -35,9 +35,10 @@ pub struct CommandLog {
 }
 
 use rsa::{RsaPrivateKey, RsaPublicKey, Oaep};
-use rsa::traits::PublicKeyParts;
-use aes_gcm::{Aes256Gcm, Key, Nonce};
-use aes_gcm::aead::{Aead, KeyInit};
+use rsa::pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
+use rsa::pkcs8::EncodePublicKey;
+use aes_gcm::{Aes256Gcm, Key, Nonce, AeadCore};
+use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use sha2::Sha256;
 use std::fs;
 use std::path::Path;
@@ -102,9 +103,7 @@ fn decrypt_aes(raw_b64: &str, aes_key: &[u8]) -> Option<String> {
 fn encrypt_aes(json_str: &str, aes_key: &[u8]) -> String {
     let key = Key::<Aes256Gcm>::from_slice(aes_key);
     let cipher = Aes256Gcm::new(key);
-    let mut rng = rand::thread_rng();
-    let nonce = aes_gcm::aead::OsRng;
-    let generated_nonce = Aes256Gcm::generate_nonce(&mut rng);
+    let generated_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     
     if let Ok(encrypted_tag) = cipher.encrypt(&generated_nonce, json_str.as_bytes()) {
         // encrypted_tag contains ciphertext + tag (16 bytes at end)
