@@ -1,7 +1,7 @@
 <p align="center">
 <img src="assets/banner.png" alt="AeroCommand — Remote Endpoint Monitoring and Security Telemetry" width="100%">
 </p> <p align="center">
-  <strong>Lightweight Python client-server framework for authorized endpoint monitoring, administration, and security telemetry testing.</strong>
+  <strong>Lightweight Python and Tauri C2 & endpoint administration framework for authorized monitoring, security telemetry testing, and lab demonstrations.</strong>
 </p> <p align="center">
   <em>Designed for isolated labs, controlled demonstrations, and approved security research.</em>
 </p>
@@ -10,7 +10,7 @@
 
 ## Overview
 
-**AeroCommand** is a lightweight Python client-server framework for studying endpoint monitoring workflows and security telemetry in controlled environments. It provides a management server, a Windows-focused endpoint client, session tracking, command queuing, diagnostic collection, and artifact handling for authorized lab testing.
+**AeroCommand** is a modern client-server framework for studying endpoint administration workflows, command execution pipelines, and security telemetry in controlled environments. It provides a robust Rust/Python management backend, a sleek modern **Tauri v2 + React** desktop dashboard, a Python CustomTkinter control panel, and a Windows-focused endpoint client with live diagnostic streaming and high-performance file exploring.
 
 The project is intended for **defensive research, system administration exercises, and isolated security simulations**. It must not be used to access, monitor, control, or collect data from systems without explicit permission.
 
@@ -20,34 +20,37 @@ The project is intended for **defensive research, system administration exercise
 
 | Area | Functionality |
 | --- | --- |
-| Endpoint monitoring | Collects approved system diagnostics, process context, network information, screenshots, directory listings, and clipboard state during authorized testing. |
-| Session management | Tracks registered endpoints, active status, process identifiers, and selected target context. |
-| Command delivery | Queues operator-approved actions through the management server and records returned results. |
-| Artifact handling | Stores test outputs and collected artifacts under the local `loot/` directory. |
-| Communication | Uses HTTP polling with configurable delay and jitter for lab simulations. |
-| Persistence research | Includes optional startup-configuration checks for controlled Windows lab experiments. |
-| Storage | Maintains client registration history and command logs in SQLite. |
+| **Desktop Admin Dashboard** | Modern Tauri v2 + React 19 + Tailwind interface with dark glassmorphism, real-time client status, telemetry charts, interactive terminal, and process manager. |
+| **Remote File Explorer** | High-performance directory navigation powered by `os.scandir()` and structured JSON serialization with clickable breadcrumbs, navigation history, and quick access folders. |
+| **Instant Live Previews** | In-modal previewing of remote images (PNG, JPG, ICO, WebP) with zoom controls and transparency support, plus UTF-8 text/script viewer. |
+| **OneDrive & Shell Resolution** | Dynamic Windows Registry querying (`User Shell Folders`) that automatically resolves paths for folders redirected to OneDrive (Desktop, Documents, Pictures, etc.). |
+| **Telemetry & Diagnostics** | Real-time CPU, RAM, Network, and Disk usage metrics along with system information, process listing, and process termination. |
+| **Command Delivery** | Interactive terminal queuing with real-time polling, result delivery, and SQLite execution history. |
+| **Artifact Collection** | One-click artifact downloads and loot gallery under `./loot/<hostname>/`. |
+| **Clipboard Stream** | Real-time clipboard monitoring with automatic logging to the management server. |
 
 ## Architecture
 
-AeroCommand consists of two primary components:
+AeroCommand consists of modular backend and operator interfaces:
 
-| Component | File | Responsibility |
+| Component | Path / File | Responsibility |
 | --- | --- | --- |
-| Management server | `server.py` | Hosts the HTTP service, manages sessions, queues commands, monitors endpoint health, and stores test artifacts. |
-| Endpoint client | `client.py` | Polls the server, performs approved diagnostic actions, and returns encrypted test responses. |
+| **Tauri Desktop App** | `aerocommand-tauri/` | Modern Rust + React desktop GUI with live client metrics, terminal, process manager, and remote file explorer. |
+| **Management Server** | `server.py` | Standalone Flask-based management server with SQLite session & command logging. |
+| **CustomTkinter GUI** | `control_panel.py` | Lightweight Python desktop GUI for operator management and loot visualization. |
+| **Endpoint Client** | `client.py` | Polling client supporting diagnostics, instant previews, file browsing, persistence checks, and command execution. |
 
 ```
-┌──────────────────────────┐       HTTP polling / JSON       ┌──────────────────────────┐
-│                          │  ◄──────────────────────────►  │                          │
-│    Management Server     │                                │     Windows Endpoint     │
-│       server.py          │                                │        client.py         │
-│                          │                                │                          │
-│  • Sessions              │                                │  • Diagnostics           │
-│  • Command queue        │                                │  • Approved actions      │
-│  • Health monitoring     │                                │  • Result delivery       │
-│  • SQLite logs           │                                │  • Optional lab checks   │
-└──────────────────────────┘                                └──────────────────────────┘
+┌─────────────────────────────────────────┐       HTTP Polling / JSON       ┌──────────────────────────┐
+│         AeroCommand Control Panel       │  ◄────────────────────────────► │     Windows Endpoint     │
+│       Tauri v2 GUI / server.py          │                                 │        client.py         │
+│                                         │                                 │                          │
+│  • Real-time Telemetry Dashboard        │                                 │  • System Diagnostics    │
+│  • Remote File Explorer & Previews      │                                 │  • Live File Previews    │
+│  • Interactive Command Terminal         │                                 │  • Process Telemetry     │
+│  • Process Manager & Termination        │                                 │  • Result Delivery       │
+│  • Loot Gallery & SQLite Logs           │                                 │  • Shell Resolution      │
+└─────────────────────────────────────────┘                                 └──────────────────────────┘
 ```
 
 ## Quick Start
@@ -57,133 +60,129 @@ AeroCommand consists of two primary components:
 | Requirement | Supported environment |
 | --- | --- |
 | Python | 3.10 or newer |
-| Endpoint client | Windows test systems |
+| Node.js / Rust | Node.js 18+ (pnpm) and Rust (for Tauri desktop app) |
+| Endpoint client | Windows 10/11 test systems |
 | Management server | Windows or Linux laboratory host |
-| Network | Private, isolated, or explicitly authorized test network |
 
-### Install dependencies
+### 1. Install Dependencies
 
-```
+```powershell
+# Python environment
 pip install -r requirements.txt
+
+# Tauri frontend
+cd aerocommand-tauri
+pnpm install
+cd ..
 ```
 
-### Start the management server
+### 2. Run the Tauri Desktop Control Panel
 
-```
-python server.py
+```powershell
+cd aerocommand-tauri
+pnpm tauri dev
 ```
 
-The default configuration listens on `0.0.0.0:443` over HTTP. For laboratory use, restrict access with host firewall rules and bind to a private interface whenever possible.
+The Tauri application will launch the built-in Rust C2 listener on port `443` and open the operator desktop interface.
+
+### 3. Start the Python Endpoint Client
+
+```powershell
+python client.py
+```
 
 ## Client Configuration
 
-Update the endpoint client configuration before starting an authorized test:
+Update the endpoint client configuration in `client.py` before testing:
 
 ```python
 # client.py
 C2_DOMAIN = "http://127.0.0.1:443/"  # Laboratory server address
 POLLING_DELAY = 5                     # Polling frequency in seconds
 JITTER = 2                            # Random delay range in seconds
-ANTI_VM = False                       # Optional controlled-lab sandbox check
+ANTI_VM = False                       # Set to False for local testing/VMs
 ```
 
-> **Security note:** The default transport is HTTP and the project uses single-byte XOR obfuscation for payload testing. These mechanisms are not a substitute for production-grade TLS, authenticated encryption, certificate validation, or secure key management.
+> **Security note:** The default transport is HTTP with byte-level XOR obfuscation and Base64 encoding. These mechanisms are designed for controlled telemetry testing and detection research, not production environments.
 
-## Build the Windows Client
+## Build Standalone Executable
 
-Compile a standalone Windows client with PyInstaller:
+Compile a standalone Windows client using PyInstaller:
 
+```powershell
+pyinstaller .\client.spec --noconfirm
 ```
-pyinstaller .\client.spec
-```
 
-The generated executable is written to:
+The generated executable is output to:
 
 ```
 ./dist/WindowsUpdate.exe
 ```
 
-Use a neutral test filename and a dedicated laboratory directory when demonstrating the project. Do not disguise test software as a system component on real endpoints.
-
 ## Command Reference
 
-The server CLI becomes available after the management server starts. Use the following commands only against explicitly authorized laboratory endpoints.
+The command center and interactive terminal support the following commands:
 
-### Session Management
-
-| Command | Description |
-| --- | --- |
-| `list` | Displays registered clients, status, IP address, and process identifier. |
-| `target <id>` | Selects the active client context. |
-| `broadcast <cmd>` | Queues an approved command for all connected clients. |
-
-### Endpoint Diagnostics and Interaction
+### Session & Diagnostics
 
 | Command | Description |
 | --- | --- |
-| `sysinfo` | Retrieves approved hardware, OS, user, network-interface, and privilege diagnostics. |
-| `screenshot` | Captures the endpoint display and stores the result under `./loot/<hostname>/`. |
+| `sysinfo` | Retrieves hardware specs, OS version, active user, network info, and admin rights. |
+| `ps` | Lists running processes with PID, memory, CPU, and window titles in structured JSON. |
+| `killproc <pid/name>` | Terminates a target process on the remote endpoint. |
+| `screenshot` | Captures the remote screen and saves the image to `./loot/<hostname>/`. |
 | `pwd` | Returns the current working directory. |
 | `cd <path>` | Changes the current working directory. |
-| `ls [path]` | Lists files with type, size, and modification time. |
-| `download <path>` | Copies an explicitly selected test artifact to the server’s `./loot/` directory. |
-| `upload <url> <dst>` | Instructs the client to retrieve a test file from an approved laboratory URL. |
-| `sleep <seconds>` | Changes the client polling interval. |
-| `dialog <title> | <msg>` | Displays a visible Windows message box for demonstration purposes. |
-| `persist` | Verifies or reapplies the configured startup behavior in a controlled lab. |
 
-### Clipboard Testing
+### File Exploration & Previews
 
 | Command | Description |
 | --- | --- |
-| `clip` | Reads the current clipboard text during an approved test. |
-| `clipwatch` | Starts a background clipboard-change monitor with a three-second interval. |
-| `clipstop` | Stops the active clipboard monitor. |
+| `ls [path]` | Fast directory listing returning structured JSON (`[JSON_FILES]`) with type, size, and modified date. |
+| `preview <path>` | Streams an instant preview of images (PNG, JPG, ICO, WebP) or text files to the preview modal. |
+| `download <path>` | Downloads a remote file and saves it into the local loot store. |
+| `upload <url> <dst>` | Instructs the remote client to download a file from an approved URL to destination. |
 
-### Server Utilities
+### Utilities & Telemetry
 
 | Command | Description |
 | --- | --- |
-| `kill` | Requests client self-termination and a clean exit. |
-| `db clients` | Displays historical client registration records from SQLite. |
-| `db logs [limit]` | Queries recent command results from SQLite. |
-| `help` | Displays the available command list and usage information. |
-| `clear` | Clears the local terminal screen. |
-| `exit` | Shuts down the management server process. |
+| `clip` | Reads the current clipboard text. |
+| `clipwatch` | Starts real-time clipboard monitoring and logs changes to the server. |
+| `clipstop` | Stops clipboard monitoring. |
+| `sleep <seconds>` | Adjusts the client polling interval (1–3600 seconds). |
+| `dialog <title> \| <msg>` | Displays a native Windows alert message box on the client. |
+| `persist` | Verifies or sets startup persistence in the user Startup folder. |
+| `kill` | Commands the client to self-destruct and exit cleanly. |
 
 ## Communication Model
 
-The current test protocol uses the following HTTP routes:
+The HTTP communication endpoints:
 
-| Route | Purpose |
-| --- | --- |
-| `POST /register` | Registers an endpoint with the management server. |
-| `GET /cmd` | Retrieves queued instructions. |
-| `POST /result` | Returns command output and diagnostic results. |
-| `POST /upload` | Transfers an approved test artifact. |
-
-Payloads are JSON data encoded over raw HTTP request bodies. The current implementation applies byte-level XOR obfuscation with a configurable single-byte key, then Base64 encoding. This behavior is suitable for telemetry and detection experiments, but it should be treated as **intentionally non-production**.
-
-## Recommended Lab Controls
-
-Use a private virtual network, disposable virtual machines, non-sensitive test data, and dedicated test accounts. Keep endpoint and server logs enabled, document authorization before each exercise, and remove generated artifacts after testing. For any real deployment or enterprise integration, replace the current transport and payload protection with authenticated TLS and a properly designed cryptographic protocol.
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/register` | `POST` | Initial endpoint handshake and system telemetry payload. |
+| `/cmd` | `GET` | Polling endpoint for retrieving queued instructions. |
+| `/result` | `POST` | Delivering execution output, telemetry, and structured data. |
+| `/upload` | `POST` | Streaming binary artifacts and downloaded loot to the server. |
 
 ## Project Layout
 
 ```
 .
-├── server.py             # Management server
-├── client.py             # Windows endpoint client
-├── client.spec           # PyInstaller build configuration
-├── requirements.txt      # Python dependencies
-├── loot/                 # Local test artifacts and outputs
-└── README.md             # Project documentation
+├── aerocommand-tauri/        # Tauri v2 + React 19 operator desktop application
+│   ├── src/                  # React dashboard, terminal, file explorer, preview modal
+│   └── src-tauri/            # Rust C2 backend, DB handlers, and native bridge
+├── client.py                 # Windows endpoint agent (diagnostics, scandir, previews)
+├── client.spec               # PyInstaller standalone build specification
+├── control_panel.py          # Alternative CustomTkinter Python desktop GUI
+├── server.py                 # Standalone Flask-based C2 management server
+├── requirements.txt          # Python dependencies (Pillow, requests, etc.)
+├── loot/                     # Downloaded files, screenshots, and collected artifacts
+├── aerocommand.db            # SQLite history and client records
+└── README.md                 # Project documentation
 ```
 
 ## Disclaimer
 
-> **FOR EDUCATIONAL AND AUTHORIZED SECURITY RESEARCH / LAB TESTING ONLY.**AeroCommand is intended solely for authorized system administration, security auditing, and educational simulations in isolated laboratory environments. Unauthorized access to computer systems, interception of data, persistence on devices, or collection of information is illegal under applicable local, national, and international laws. The maintainers are not responsible for misuse or damage caused by this software.
-
-## License
-
-Add the project license and contribution guidelines here before publishing the repository. If this is an internal research project, state the permitted audience and distribution restrictions explicitly.
+> **FOR EDUCATIONAL AND AUTHORIZED SECURITY RESEARCH / LAB TESTING ONLY.** AeroCommand is intended solely for authorized system administration, security auditing, and educational simulations in isolated laboratory environments. Unauthorized access to computer systems, interception of data, persistence on devices, or collection of information is illegal under applicable local, national, and international laws. The maintainers are not responsible for misuse or damage caused by this software.
