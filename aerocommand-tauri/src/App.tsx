@@ -716,196 +716,202 @@ export default function App() {
   };
 
   return (
-    <div className="p-2 sm:p-3 bg-gradient-to-br from-[#01081a] via-[#03091b] to-[#01040d] h-screen w-screen overflow-hidden flex flex-col justify-center font-sans select-none antialiased">
+    <div className="flex h-screen w-screen bg-c2bg text-slate-100 overflow-hidden font-sans select-none antialiased">
       
-      {/* MASTER APPLICATION SHELL WITH ROUNDED CORNERS */}
-      <div className="h-full w-full bg-c2bg rounded-[26px] border border-c2border/80 overflow-hidden flex shadow-2xl relative">
-        
-        {/* ==================== SIDEBAR ==================== */}
-        <div className="w-64 bg-c2sidebar border-r border-c2border/80 flex flex-col justify-between p-4 shrink-0">
-          <div>
-            {/* Stovest-style Branding Header */}
-            <div className="flex items-center space-x-3 mb-5 px-2 pt-1">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/30 shrink-0">
-                <Zap className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <span className="font-extrabold text-base text-white tracking-tight">AeroCommand</span>
-                <span className="text-[10px] block text-c2cyan font-bold tracking-widest uppercase">PRO C2 V3.5</span>
-              </div>
+      {/* ==================== SIDEBAR ==================== */}
+      <div className="w-60 bg-c2sidebar border-r border-c2border flex flex-col justify-between p-3 shrink-0">
+        <div>
+          {/* Windows-style Header */}
+          <div className="flex items-center space-x-2.5 px-2 py-3 mb-2 border-b border-c2border/60">
+            <div className="w-8 h-8 rounded-lg bg-c2accent flex items-center justify-center shadow-sm shrink-0">
+              <Zap className="w-4 h-4 text-white" />
             </div>
-
-            {/* Welcome Operator Banner */}
-            <div className="mb-5 px-2">
-              <h2 className="text-base font-bold text-white tracking-tight">Welcome, Operator</h2>
-              <p className="text-[11px] text-slate-400 mt-0.5">Here's your live C2 telemetry overview</p>
-            </div>
-
-            {/* Main Navigation Menu */}
-            <div className="space-y-1">
-              <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider px-3 mb-2">Main Menu</div>
-              {[
-                { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, tip: 'Fleet overview and live telemetry' },
-                { id: 'endpoints', label: 'Endpoints', icon: Monitor, tip: 'Manage connected remote endpoints' },
-                { id: 'terminal', label: 'Command Center', icon: TermIcon, tip: 'Interactive command shell' },
-                { id: 'processes', label: 'Process Manager', icon: Cpu, tip: 'Process telemetry & termination' },
-                { id: 'files', label: 'File & Loot', icon: FolderOpen, tip: 'Remote filesystem & live preview' },
-                { id: 'clipboard', label: 'Clipboard Stream', icon: Clipboard, tip: 'Live clipboard monitor' },
-                { id: 'database', label: 'History & Logs', icon: Database, tip: 'Historical command executions' },
-                { id: 'settings', label: 'Server Config', icon: Settings, tip: 'C2 network & server parameters' },
-              ].map((item) => {
-                const Icon = item.icon;
-                const isActive = activeTab === item.id;
-                return (
-                  <Tooltip key={item.id} text={item.tip} position="right">
-                    <button
-                      onClick={() => setActiveTab(item.id as any)}
-                      className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
-                        isActive 
-                          ? 'bg-c2accent text-white font-bold shadow-lg shadow-blue-600/30' 
-                          : 'text-slate-400 hover:bg-c2card hover:text-white'
-                      }`}
-                    >
-                      <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-                      <span>{item.label}</span>
-                    </button>
-                  </Tooltip>
-                );
-              })}
+            <div>
+              <span className="font-bold text-sm text-white tracking-tight block">AeroCommand</span>
+              <span className="text-[10px] text-slate-400 font-semibold block uppercase tracking-wider">C2 Console v3.5</span>
             </div>
           </div>
 
-          {/* Footer Listener Status */}
-          <div className="p-3 bg-c2card border border-c2border/80 rounded-2xl">
-            <div className="flex items-center justify-between text-xs text-slate-300 mb-1">
-              <span className="text-[11px] font-semibold">Listener Status</span>
-              <span className="flex items-center text-emerald-400 text-[10px] font-bold">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
-                ACTIVE
-              </span>
-            </div>
-            <div className="text-[10px] text-slate-400 font-mono flex items-center justify-between mt-1">
-              <span>Port: {serverPort}</span>
-              <span>{clients.length} Client{clients.length === 1 ? '' : 's'}</span>
-            </div>
+          {/* Main Navigation Menu */}
+          <div className="space-y-0.5 mt-2">
+            <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider px-2.5 py-1">Navigation</div>
+            {[
+              { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, tip: 'Fleet overview and live telemetry' },
+              { id: 'endpoints', label: 'Endpoints', icon: Monitor, tip: 'Manage connected remote endpoints' },
+              { id: 'terminal', label: 'Command Center', icon: TermIcon, tip: 'Interactive command shell' },
+              { id: 'processes', label: 'Process Manager', icon: Cpu, tip: 'Process telemetry & termination' },
+              { id: 'files', label: 'File & Loot', icon: FolderOpen, tip: 'Remote filesystem & live preview' },
+              { id: 'clipboard', label: 'Clipboard Stream', icon: Clipboard, tip: 'Live clipboard monitor' },
+              { id: 'database', label: 'History & Logs', icon: Database, tip: 'Historical command executions' },
+              { id: 'settings', label: 'Server Config', icon: Settings, tip: 'C2 network & server parameters' },
+            ].map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <Tooltip key={item.id} text={item.tip} position="right">
+                  <button
+                    onClick={() => setActiveTab(item.id as any)}
+                    className={`w-full flex items-center space-x-2.5 px-2.5 py-2 rounded-md text-xs font-medium transition-colors ${
+                      isActive 
+                        ? 'bg-c2accent text-white font-semibold shadow-sm' 
+                        : 'text-slate-300 hover:bg-c2card hover:text-white'
+                    }`}
+                  >
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                    <span>{item.label}</span>
+                  </button>
+                </Tooltip>
+              );
+            })}
           </div>
         </div>
 
-        {/* ==================== MAIN WORKSPACE ==================== */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-c2bg">
-          
-          {/* STOVEST-STYLE PILL TOP BAR */}
-          <header className="h-16 px-6 flex items-center justify-between border-b border-c2border/50 bg-c2bg/50 backdrop-blur-md shrink-0">
-            {/* View Tag Pills */}
-            <div className="flex items-center space-x-2">
-              {[
-                { label: 'Overview', tab: 'dashboard' },
-                { label: 'Endpoints', tab: 'endpoints' },
-                { label: 'Files', tab: 'files' },
-              ].map((pill) => (
-                <button
-                  key={pill.tab}
-                  onClick={() => setActiveTab(pill.tab as any)}
-                  className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-colors border ${
-                    activeTab === pill.tab
-                      ? 'bg-c2accent text-white border-c2accent shadow-md shadow-blue-500/20'
-                      : 'bg-c2card text-slate-300 border-c2border hover:border-c2borderlight hover:text-white'
-                  }`}
-                >
-                  {pill.label}
-                </button>
-              ))}
-            </div>
+        {/* Footer Listener Status */}
+        <div className="p-2.5 bg-c2card border border-c2border rounded-lg">
+          <div className="flex items-center justify-between text-xs text-slate-300 mb-1">
+            <span className="text-[11px] font-semibold">Listener Status</span>
+            <span className="flex items-center text-emerald-400 text-[10px] font-bold">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
+              ACTIVE
+            </span>
+          </div>
+          <div className="text-[10px] text-slate-400 font-mono flex items-center justify-between mt-1">
+            <span>Port: {serverPort}</span>
+            <span>{clients.length} Client{clients.length === 1 ? '' : 's'}</span>
+          </div>
+        </div>
+      </div>
 
-            {/* Center Pill Search / Quick Command Box */}
-            <div className="flex items-center space-x-2 bg-c2card border border-c2border rounded-full px-4 py-2 w-80 text-xs text-slate-300">
-              <Search className="w-3.5 h-3.5 text-c2cyan shrink-0" />
-              <input
-                type="text"
-                placeholder="Ask AeroCommand or search..."
-                value={termInput}
-                onChange={(e) => handleInputChange(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    executeCommand(termInput);
-                    setActiveTab('terminal');
-                  }
-                }}
-                className="bg-transparent text-xs text-white placeholder:text-slate-500 outline-none w-full font-sans"
-              />
-            </div>
-
-            {/* Right Action Pills */}
-            <div className="flex items-center space-x-2.5">
-              {/* Target Selector Pill */}
-              <div className="flex items-center space-x-2 bg-c2card border border-c2border rounded-full px-3.5 py-1.5">
-                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                <span className="text-[11px] font-bold text-slate-200">
-                  {(clients.find(c => c.id === selectedClientId) || clients[0])?.host || 'No Target'}
-                </span>
-              </div>
-
-              {/* Server Control Pill */}
-              <button 
-                onClick={() => setServerRunning(!serverRunning)}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-bold flex items-center space-x-1.5 border transition-all ${
-                  serverRunning 
-                    ? 'bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20' 
-                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+      {/* ==================== MAIN WORKSPACE ==================== */}
+      <div className="flex-1 flex flex-col overflow-hidden bg-c2bg">
+        
+        {/* WINDOWS TOOLBAR */}
+        <header className="h-12 px-5 flex items-center justify-between border-b border-c2border bg-c2sidebar/60 shrink-0">
+          {/* View Switcher Segmented Control */}
+          <div className="flex items-center space-x-1 bg-c2card border border-c2border rounded-md p-0.5">
+            {[
+              { label: 'Overview', tab: 'dashboard' },
+              { label: 'Endpoints', tab: 'endpoints' },
+              { label: 'Files', tab: 'files' },
+              { label: 'Terminal', tab: 'terminal' },
+            ].map((pill) => (
+              <button
+                key={pill.tab}
+                onClick={() => setActiveTab(pill.tab as any)}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  activeTab === pill.tab
+                    ? 'bg-c2accent text-white font-semibold shadow-sm'
+                    : 'text-slate-300 hover:text-white'
                 }`}
               >
-                {serverRunning ? <Square className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}
-                <span>{serverRunning ? 'Stop Server' : 'Start Server'}</span>
+                {pill.label}
               </button>
-            </div>
-          </header>
+            ))}
+          </div>
 
-          {/* MAIN CONTENT AREA */}
-          <main className="flex-1 overflow-auto p-5 space-y-5">
+          {/* Center Search / Command Box */}
+          <div className="flex items-center space-x-2 bg-c2pill border border-c2border rounded-md px-3 py-1.5 w-72 text-xs text-slate-300">
+            <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <input
+              type="text"
+              placeholder="Search endpoints or run command..."
+              value={termInput}
+              onChange={(e) => handleInputChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  executeCommand(termInput);
+                  setActiveTab('terminal');
+                }
+              }}
+              className="bg-transparent text-xs text-white placeholder:text-slate-500 outline-none w-full font-sans"
+            />
+          </div>
+
+          {/* Right Actions */}
+          <div className="flex items-center space-x-2">
+            {/* Target Machine Selector */}
+            {clients.length > 1 ? (
+              <div className="flex items-center space-x-1.5 bg-c2card border border-c2border rounded-md px-2.5 py-1">
+                <span className="text-[10px] text-slate-400 uppercase font-bold">Target:</span>
+                <select
+                  value={selectedClientId || (clients[0]?.id || '')}
+                  onChange={(e) => setSelectedClientId(e.target.value)}
+                  className="bg-transparent text-xs font-mono text-c2cyan font-bold outline-none cursor-pointer"
+                >
+                  {clients.map(c => (
+                    <option key={c.id} value={c.id} className="bg-slate-900 text-slate-200">
+                      {c.host} ({c.ip})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-2 bg-c2card border border-c2border rounded-md px-3 py-1 text-xs">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <span className="text-slate-200 font-mono font-medium">
+                  {(clients.find(c => c.id === selectedClientId) || clients[0])?.host || 'None Selected'}
+                </span>
+              </div>
+            )}
+
+            {/* Server Control Button */}
+            <button 
+              onClick={() => setServerRunning(!serverRunning)}
+              className={`px-3 py-1 rounded-md text-xs font-semibold flex items-center space-x-1.5 border transition-colors ${
+                serverRunning 
+                  ? 'bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20' 
+                  : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+              }`}
+            >
+              {serverRunning ? <Square className="w-3 h-3 fill-current" /> : <Play className="w-3 h-3 fill-current" />}
+              <span>{serverRunning ? 'Stop Server' : 'Start Server'}</span>
+            </button>
+          </div>
+        </header>
+
+        {/* MAIN CONTENT AREA */}
+        <main className="flex-1 overflow-auto p-5 space-y-4">
             
             {/* ==================== 1. DASHBOARD VIEW (STOVEST STYLE) ==================== */}
             {activeTab === 'dashboard' && (
               <div className="space-y-5">
                 
-                {/* ROW 1: HERO METRIC (Total Holding) + MINI TARGET CARDS (My Portfolio) */}
-                <div className="grid grid-cols-12 gap-5">
+                {/* ROW 1: HERO METRIC + MINI TARGET CARDS */}
+                <div className="grid grid-cols-12 gap-4">
                   
-                  {/* Hero Metric Card (Total Holding Style) */}
-                  <div className="col-span-5 bg-c2card border border-c2border rounded-3xl p-6 relative overflow-hidden flex flex-col justify-between shadow-card">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Fleet Telemetry</span>
-                      <div className="flex items-center space-x-1 bg-c2pill border border-c2border rounded-full px-2.5 py-1 text-[10px] font-bold text-slate-300">
+                  {/* Hero Metric Card */}
+                  <div className="col-span-5 bg-c2card border border-c2border rounded-xl p-5 relative flex flex-col justify-between shadow-card">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Fleet Telemetry</span>
+                      <div className="flex items-center space-x-1 bg-c2pill border border-c2border rounded-md px-2 py-0.5 text-[10px] font-bold text-slate-300">
                         <span>LIVE</span>
                         <ChevronDown className="w-3 h-3 text-slate-500" />
                       </div>
                     </div>
 
-                    <div className="my-2">
-                      <div className="text-3xl font-extrabold text-white tracking-tight font-mono">
+                    <div className="my-1">
+                      <div className="text-2xl font-bold text-white tracking-tight font-mono">
                         {clients.length} Endpoint{clients.length === 1 ? '' : 's'} Online
                       </div>
-                      <div className="flex items-center space-x-2 mt-3">
+                      <div className="flex items-center space-x-2 mt-2">
                         <span className="text-xs text-slate-400">Health:</span>
-                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-flex items-center space-x-1">
+                        <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-flex items-center space-x-1">
                           <TrendingUp className="w-3 h-3" />
                           <span>+99.8% Uptime</span>
                         </span>
                       </div>
                     </div>
 
-                    <div className="pt-4 border-t border-c2border/60 flex items-center justify-between text-xs text-slate-400 font-medium">
+                    <div className="pt-3 border-t border-c2border/60 flex items-center justify-between text-xs text-slate-400 font-medium">
                       <span>Target: {(clients.find(c => c.id === selectedClientId) || clients[0])?.host || 'None'}</span>
-                      <span className="text-c2cyan font-bold">{logs.length} Total Operations</span>
+                      <span className="text-c2cyan font-bold">{logs.length} Operations</span>
                     </div>
-
-                    {/* Subtle decorative glow */}
-                    <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-blue-600/10 rounded-full blur-2xl pointer-events-none" />
                   </div>
 
-                  {/* Connected Target Mini Cards (My Portfolio Style) */}
-                  <div className="col-span-7 bg-c2card border border-c2border rounded-3xl p-6 shadow-card flex flex-col justify-between">
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Connected Fleet Targets</span>
+                  {/* Connected Target Mini Cards */}
+                  <div className="col-span-7 bg-c2card border border-c2border rounded-xl p-5 shadow-card flex flex-col justify-between">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Connected Fleet Targets</span>
                       <button 
                         onClick={() => setActiveTab('endpoints')}
                         className="text-xs font-semibold text-c2cyan hover:text-white flex items-center space-x-1 transition-colors"
@@ -915,9 +921,9 @@ export default function App() {
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-3 gap-2.5">
                       {clients.length === 0 ? (
-                        <div className="col-span-3 p-8 text-center text-slate-500 text-xs italic">
+                        <div className="col-span-3 p-6 text-center text-slate-500 text-xs italic">
                           Waiting for endpoints to connect...
                         </div>
                       ) : (
@@ -927,20 +933,20 @@ export default function App() {
                             <div
                               key={c.id}
                               onClick={() => setSelectedClientId(c.id)}
-                              className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
+                              className={`p-3 rounded-lg border transition-all cursor-pointer flex flex-col justify-between ${
                                 isTarget
-                                  ? 'bg-[#172033] border-c2accent shadow-lg shadow-blue-500/10'
+                                  ? 'bg-[#1A2235] border-c2accent shadow-sm'
                                   : 'bg-c2pill border-c2border hover:border-c2borderlight'
                               }`}
                             >
                               <div className="flex items-center justify-between text-xs">
-                                <span className="font-bold text-white truncate max-w-[90px]">{c.host}</span>
-                                <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                <span className="font-bold text-white truncate max-w-[85px]">{c.host}</span>
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                                   ALIVE
                                 </span>
                               </div>
-                              <div className="my-2">
-                                <div className="text-lg font-extrabold text-white font-mono">{c.ip}</div>
+                              <div className="my-1.5">
+                                <div className="text-base font-bold text-white font-mono">{c.ip}</div>
                                 <div className="text-[10px] text-slate-400 truncate">{c.os}</div>
                               </div>
                               <div className="text-[10px] font-mono text-slate-500 flex items-center justify-between">
@@ -956,16 +962,16 @@ export default function App() {
                 </div>
 
                 {/* ROW 2: REAL CONNECTED ENDPOINTS & FLEET TELEMETRY */}
-                <div className="bg-c2card border border-c2border rounded-3xl p-6 shadow-card space-y-4">
+                <div className="bg-c2card border border-c2border rounded-xl p-4 shadow-card space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="text-sm font-bold text-white tracking-tight">Active Remote Endpoints</h3>
-                      <p className="text-xs text-slate-400">Select an active machine to target commands & browse filesystem</p>
+                      <h3 className="text-xs font-bold text-white uppercase tracking-wider">Active Remote Endpoints</h3>
+                      <p className="text-[11px] text-slate-400">Select an active machine to target commands & browse filesystem</p>
                     </div>
 
                     <button 
                       onClick={() => invoke<Client[]>('get_clients').then(setClients)}
-                      className="px-3.5 py-1.5 bg-c2pill border border-c2border hover:border-c2accent text-xs font-semibold text-slate-300 hover:text-white rounded-full flex items-center space-x-1.5 transition-colors"
+                      className="px-2.5 py-1 bg-c2pill border border-c2border hover:border-c2accent text-xs font-medium text-slate-300 hover:text-white rounded-md flex items-center space-x-1.5 transition-colors"
                     >
                       <RefreshCw className="w-3 h-3" />
                       <span>Refresh Fleet</span>
@@ -974,38 +980,38 @@ export default function App() {
 
                   <div className="overflow-x-auto">
                     {clients.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 text-xs italic bg-c2pill/50 rounded-2xl border border-c2border">
+                      <div className="p-6 text-center text-slate-500 text-xs italic bg-c2pill/50 rounded-lg border border-c2border">
                         No remote endpoints currently connected. Run client executable on target.
                       </div>
                     ) : (
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         {clients.map((c, i) => {
                           const isTarget = (selectedClientId ? selectedClientId === c.id : i === 0);
                           return (
                             <div
                               key={c.id}
                               onClick={() => setSelectedClientId(c.id)}
-                              className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                              className={`p-3 rounded-lg border transition-all cursor-pointer flex items-center justify-between ${
                                 isTarget
-                                  ? 'bg-[#172033] border-c2accent shadow-lg shadow-blue-500/10'
-                                  : 'bg-c2pill/70 hover:bg-c2pill border-c2border'
+                                  ? 'bg-[#1A2235] border-c2accent shadow-sm'
+                                  : 'bg-c2pill/60 hover:bg-c2pill border-c2border'
                               }`}
                             >
-                              <div className="flex items-center space-x-4">
-                                <div className={`p-2.5 rounded-xl border ${isTarget ? 'bg-c2accent text-white border-c2accent' : 'bg-c2bg text-slate-400 border-c2border'}`}>
+                              <div className="flex items-center space-x-3">
+                                <div className={`p-2 rounded-md border ${isTarget ? 'bg-c2accent text-white border-c2accent' : 'bg-c2bg text-slate-400 border-c2border'}`}>
                                   <Monitor className="w-4 h-4" />
                                 </div>
                                 <div>
                                   <div className="flex items-center space-x-2">
-                                    <span className="font-bold text-white text-sm">{c.host}</span>
-                                    <span className="text-xs text-slate-400">({c.user})</span>
+                                    <span className="font-bold text-white text-xs">{c.host}</span>
+                                    <span className="text-[11px] text-slate-400">({c.user})</span>
                                     {isTarget && (
-                                      <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-c2accent text-white">
+                                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-c2accent text-white">
                                         ACTIVE TARGET
                                       </span>
                                     )}
                                   </div>
-                                  <div className="flex items-center space-x-3 text-[11px] text-slate-400 font-mono mt-0.5">
+                                  <div className="flex items-center space-x-2 text-[10px] text-slate-400 font-mono mt-0.5">
                                     <span>IP: {c.ip}</span>
                                     <span>•</span>
                                     <span>PID: {c.pid}</span>
@@ -1015,8 +1021,8 @@ export default function App() {
                                 </div>
                               </div>
 
-                              <div className="flex items-center space-x-3">
-                                <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                              <div className="flex items-center space-x-2">
+                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                                   {c.status || 'CONNECTED'}
                                 </span>
                                 <button
@@ -1025,7 +1031,7 @@ export default function App() {
                                     setSelectedClientId(c.id);
                                     setActiveTab('terminal');
                                   }}
-                                  className="px-3 py-1 bg-c2bg hover:bg-c2card border border-c2border hover:border-c2borderlight text-xs font-semibold text-c2cyan rounded-full transition-colors"
+                                  className="px-2.5 py-1 bg-c2bg hover:bg-c2card border border-c2border hover:border-c2borderlight text-xs font-medium text-c2cyan rounded-md transition-colors"
                                 >
                                   Open Shell →
                                 </button>
@@ -1038,19 +1044,19 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* ROW 3: RECENT C2 ACTIVITY (Portfolio Overview) + WATCHLIST / QUICK ACTIONS */}
-                <div className="grid grid-cols-12 gap-5">
+                {/* ROW 3: RECENT C2 ACTIVITY + WATCHLIST / QUICK ACTIONS */}
+                <div className="grid grid-cols-12 gap-4">
                   
-                  {/* Recent Activity Table (Portfolio Overview Style) */}
-                  <div className="col-span-8 bg-c2card border border-c2border rounded-3xl p-6 shadow-card flex flex-col justify-between">
-                    <div className="flex items-center justify-between mb-4">
+                  {/* Recent Activity Table */}
+                  <div className="col-span-8 bg-c2card border border-c2border rounded-xl p-4 shadow-card flex flex-col justify-between">
+                    <div className="flex items-center justify-between mb-3">
                       <div>
-                        <h3 className="text-sm font-bold text-white tracking-tight">Recent C2 Activity</h3>
-                        <p className="text-xs text-slate-400">Chronological telemetry transactions</p>
+                        <h3 className="text-xs font-bold text-white uppercase tracking-wider">Recent C2 Activity</h3>
+                        <p className="text-[11px] text-slate-400">Chronological telemetry transactions</p>
                       </div>
 
                       {/* Pill Filter Tabs */}
-                      <div className="flex items-center space-x-1 bg-c2pill p-1 rounded-full border border-c2border">
+                      <div className="flex items-center space-x-1 bg-c2pill p-0.5 rounded-md border border-c2border">
                         {[
                           { id: 'all', label: 'All' },
                           { id: 'files', label: 'Files' },
@@ -1060,9 +1066,9 @@ export default function App() {
                           <button
                             key={f.id}
                             onClick={() => setActivityFilter(f.id as any)}
-                            className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all ${
+                            className={`px-2.5 py-0.5 rounded text-[10px] font-semibold transition-colors ${
                               activityFilter === f.id
-                                ? 'bg-c2accent text-white shadow-md shadow-blue-600/30'
+                                ? 'bg-c2accent text-white'
                                 : 'text-slate-400 hover:text-slate-200'
                             }`}
                           >
@@ -1073,9 +1079,9 @@ export default function App() {
                     </div>
 
                     {/* Activity Event List */}
-                    <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                    <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                       {logs.length === 0 ? (
-                        <div className="p-8 text-center text-slate-500 text-xs italic">Waiting for activity...</div>
+                        <div className="p-6 text-center text-slate-500 text-xs italic">Waiting for activity...</div>
                       ) : (
                         (() => {
                           const formattedLogs = [...logs]
@@ -1085,27 +1091,27 @@ export default function App() {
 
                           if (formattedLogs.length === 0) {
                             return (
-                              <div className="p-8 text-center text-slate-500 text-xs italic">
+                              <div className="p-6 text-center text-slate-500 text-xs italic">
                                 No events matching filter "{activityFilter}"
                               </div>
                             );
                           }
 
                           return formattedLogs.slice(0, 5).map(({ log, event }, i) => (
-                            <div key={i} className="p-3 bg-c2pill/70 hover:bg-c2pill border border-c2border rounded-2xl transition-all flex items-center justify-between">
-                              <div className="flex items-center space-x-3 min-w-0 flex-1">
-                                <div className="p-2 rounded-xl bg-c2bg border border-c2border shrink-0">
+                            <div key={i} className="p-2.5 bg-c2pill/60 hover:bg-c2pill border border-c2border rounded-lg transition-all flex items-center justify-between">
+                              <div className="flex items-center space-x-2.5 min-w-0 flex-1">
+                                <div className="p-1.5 rounded-md bg-c2bg border border-c2border shrink-0">
                                   {event.icon}
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-center space-x-2">
-                                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border ${event.badgeClass}`}>
+                                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${event.badgeClass}`}>
                                       {event.badge}
                                     </span>
-                                    <span className="text-xs font-bold text-white truncate">{event.title}</span>
+                                    <span className="text-xs font-semibold text-white truncate">{event.title}</span>
                                     <span className="text-[10px] text-slate-500 font-mono truncate">→ {log.client_id}</span>
                                   </div>
-                                  <div className="text-[11px] text-slate-400 font-mono truncate mt-0.5 flex items-center space-x-2">
+                                  <div className="text-[10px] text-slate-400 font-mono truncate mt-0.5 flex items-center space-x-2">
                                     <span className="truncate">{event.detail}</span>
                                     {event.meta && (
                                       <span className="text-slate-600 shrink-0">• {event.meta}</span>
@@ -1113,7 +1119,7 @@ export default function App() {
                                   </div>
                                 </div>
                               </div>
-                              <div className="text-[10px] font-mono text-slate-400 shrink-0 ml-3">
+                              <div className="text-[10px] font-mono text-slate-400 shrink-0 ml-2">
                                 {log.timestamp.split(' ')[1] || log.timestamp}
                               </div>
                             </div>
@@ -1123,17 +1129,17 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Watchlist / Quick Actions Card (Watchlist Style) */}
-                  <div className="col-span-4 bg-c2card border border-c2border rounded-3xl p-6 shadow-card flex flex-col justify-between">
+                  {/* Watchlist / Quick Actions Card */}
+                  <div className="col-span-4 bg-c2card border border-c2border rounded-xl p-4 shadow-card flex flex-col justify-between">
                     <div>
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-sm font-bold text-white tracking-tight">Quick Actions</h3>
-                        <div className="bg-c2pill px-2.5 py-1 rounded-full text-[10px] font-bold text-c2cyan border border-c2border">
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-xs font-bold text-white uppercase tracking-wider">Quick Actions</h3>
+                        <div className="bg-c2pill px-2 py-0.5 rounded text-[9px] font-bold text-c2cyan border border-c2border">
                           SHORTCUTS
                         </div>
                       </div>
 
-                      <div className="space-y-2.5">
+                      <div className="space-y-2">
                         {[
                           { label: 'Remote File Explorer', icon: FolderOpen, color: 'text-amber-400', tab: 'files', action: () => setActiveTab('files') },
                           { label: 'Capture Screen', icon: Monitor, color: 'text-cyan-400', tab: 'files', action: () => { executeCommand('screenshot'); setActiveTab('files'); setFileSubTab('loot'); } },
@@ -1145,24 +1151,24 @@ export default function App() {
                             <button
                               key={i}
                               onClick={btn.action}
-                              className="w-full p-3 bg-c2pill/70 hover:bg-c2pill border border-c2border hover:border-c2accent/40 rounded-2xl transition-all flex items-center justify-between text-left group"
+                              className="w-full p-2.5 bg-c2pill/60 hover:bg-c2pill border border-c2border hover:border-c2accent/40 rounded-lg transition-colors flex items-center justify-between text-left group"
                             >
-                              <div className="flex items-center space-x-3">
-                                <div className="p-2 rounded-xl bg-c2bg border border-c2border group-hover:border-c2accent/50 transition-colors">
-                                  <Icon className={`w-4 h-4 ${btn.color}`} />
+                              <div className="flex items-center space-x-2.5">
+                                <div className="p-1.5 rounded-md bg-c2bg border border-c2border group-hover:border-c2accent/50 transition-colors">
+                                  <Icon className={`w-3.5 h-3.5 ${btn.color}`} />
                                 </div>
-                                <span className="text-xs font-bold text-slate-200 group-hover:text-white transition-colors">{btn.label}</span>
+                                <span className="text-xs font-semibold text-slate-200 group-hover:text-white transition-colors">{btn.label}</span>
                               </div>
-                              <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-c2cyan transition-colors" />
+                              <ArrowUpRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-c2cyan transition-colors" />
                             </button>
                           );
                         })}
                       </div>
                     </div>
 
-                    <div className="pt-3 border-t border-c2border/60 text-[10px] text-slate-500 font-mono flex items-center justify-between">
-                      <span>Server status: Online</span>
-                      <span className="text-emerald-400 font-bold">100% Ready</span>
+                    <div className="pt-2.5 border-t border-c2border/60 text-[10px] text-slate-500 font-mono flex items-center justify-between">
+                      <span>Listener: Online</span>
+                      <span className="text-emerald-400 font-semibold">Port {serverPort}</span>
                     </div>
                   </div>
                 </div>
@@ -1994,7 +2000,6 @@ export default function App() {
           </div>
         </div>
       )}
-      </div>
     </div>
   );
 }

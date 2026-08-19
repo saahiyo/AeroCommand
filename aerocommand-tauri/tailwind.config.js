@@ -7,35 +7,35 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Plus Jakarta Sans"', 'Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'Consolas', 'monospace'],
+        sans: ['"Segoe UI Variable"', '"Segoe UI"', '"Plus Jakarta Sans"', 'Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'Consolas', '"Cascadia Code"', 'monospace'],
       },
       colors: {
-        c2bg: "#0A0E17",          // Deep obsidian canvas
-        c2sidebar: "#0A0E17",     // Matching flush sidebar
-        c2card: "#121826",        // Smooth rounded dark card
-        c2cardhover: "#172033",   // Card hover surface
-        c2pill: "#161E2E",        // Pill input / button surface
-        c2border: "#1E2A3F",      // Crisp border line
-        c2borderlight: "#2B3B57", // Highlight border line
-        c2accent: "#0075FF",      // Reference Electric Blue
-        c2accenthover: "#0062D6", // Hover blue
-        c2cyan: "#38BDF8",        // Neon Cyan
-        c2success: "#10B981",     // Mint Emerald
-        c2danger: "#F43F5E",      // Rose Red
+        c2bg: "#0B0F19",          // Windows 11 Dark Canvas
+        c2sidebar: "#0F1420",     // Flush Sidebar Panel
+        c2card: "#141A29",        // Clean Desktop Card
+        c2cardhover: "#1A2235",   // Hover Card
+        c2pill: "#182030",        // Desktop input / surface
+        c2border: "#202B3F",      // Windows 11 subtle border
+        c2borderlight: "#2C3B55", // Highlight border
+        c2accent: "#0078D4",      // Windows 11 Accent Blue
+        c2accenthover: "#006CBE", // Hover blue
+        c2cyan: "#38BDF8",        // Sky Blue
+        c2success: "#10B981",     // Emerald
+        c2danger: "#EF4444",      // Red
         c2warning: "#F59E0B",     // Amber
       },
       borderRadius: {
-        '3xl': '24px',
-        '2xl': '18px',
-        'xl': '14px',
-        'lg': '10px',
+        '2xl': '12px',
+        'xl': '10px',
+        'lg': '8px',
+        'md': '6px',
+        'sm': '4px',
         'pill': '9999px',
       },
       boxShadow: {
-        'card': '0 4px 20px -2px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(30, 42, 63, 0.6)',
-        'pill': '0 4px 14px 0 rgba(0, 117, 255, 0.35)',
-        'glow': '0 0 25px rgba(0, 117, 255, 0.25)',
+        'card': '0 2px 8px rgba(0, 0, 0, 0.35)',
+        'dropdown': '0 8px 24px rgba(0, 0, 0, 0.45)',
       }
     },
   },
