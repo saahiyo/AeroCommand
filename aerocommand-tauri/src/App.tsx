@@ -955,72 +955,86 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* ROW 2: LIVE TELEMETRY CURVE (Portfolio Performance Style) */}
+                {/* ROW 2: REAL CONNECTED ENDPOINTS & FLEET TELEMETRY */}
                 <div className="bg-c2card border border-c2border rounded-3xl p-6 shadow-card space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="text-sm font-bold text-white tracking-tight">Telemetry Performance & Stream Flow</h3>
-                      <p className="text-xs text-slate-400">Live responsiveness & data transaction speed</p>
+                      <h3 className="text-sm font-bold text-white tracking-tight">Active Remote Endpoints</h3>
+                      <p className="text-xs text-slate-400">Select an active machine to target commands & browse filesystem</p>
                     </div>
 
-                    {/* Timeframe Pills */}
-                    <div className="flex items-center space-x-1.5 bg-c2pill p-1 rounded-full border border-c2border">
-                      {['10s', '1m', '5m', '15m', 'LIVE'].map((pill, i) => (
-                        <button
-                          key={pill}
-                          className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all ${
-                            i === 4
-                              ? 'bg-c2accent text-white shadow-md shadow-blue-600/30'
-                              : 'text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          {pill}
-                        </button>
-                      ))}
-                    </div>
+                    <button 
+                      onClick={() => invoke<Client[]>('get_clients').then(setClients)}
+                      className="px-3.5 py-1.5 bg-c2pill border border-c2border hover:border-c2accent text-xs font-semibold text-slate-300 hover:text-white rounded-full flex items-center space-x-1.5 transition-colors"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Refresh Fleet</span>
+                    </button>
                   </div>
 
-                  {/* SVG Wave Curve with Glowing Dot */}
-                  <div className="relative h-44 w-full pt-2">
-                    <svg viewBox="0 0 1000 160" className="w-full h-full overflow-visible">
-                      <defs>
-                        <linearGradient id="curveGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#0075FF" stopOpacity="0.45" />
-                          <stop offset="100%" stopColor="#0075FF" stopOpacity="0.0" />
-                        </linearGradient>
-                      </defs>
+                  <div className="overflow-x-auto">
+                    {clients.length === 0 ? (
+                      <div className="p-8 text-center text-slate-500 text-xs italic bg-c2pill/50 rounded-2xl border border-c2border">
+                        No remote endpoints currently connected. Run client executable on target.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {clients.map((c, i) => {
+                          const isTarget = (selectedClientId ? selectedClientId === c.id : i === 0);
+                          return (
+                            <div
+                              key={c.id}
+                              onClick={() => setSelectedClientId(c.id)}
+                              className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                                isTarget
+                                  ? 'bg-[#172033] border-c2accent shadow-lg shadow-blue-500/10'
+                                  : 'bg-c2pill/70 hover:bg-c2pill border-c2border'
+                              }`}
+                            >
+                              <div className="flex items-center space-x-4">
+                                <div className={`p-2.5 rounded-xl border ${isTarget ? 'bg-c2accent text-white border-c2accent' : 'bg-c2bg text-slate-400 border-c2border'}`}>
+                                  <Monitor className="w-4 h-4" />
+                                </div>
+                                <div>
+                                  <div className="flex items-center space-x-2">
+                                    <span className="font-bold text-white text-sm">{c.host}</span>
+                                    <span className="text-xs text-slate-400">({c.user})</span>
+                                    {isTarget && (
+                                      <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-c2accent text-white">
+                                        ACTIVE TARGET
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center space-x-3 text-[11px] text-slate-400 font-mono mt-0.5">
+                                    <span>IP: {c.ip}</span>
+                                    <span>•</span>
+                                    <span>PID: {c.pid}</span>
+                                    <span>•</span>
+                                    <span>OS: {c.os}</span>
+                                  </div>
+                                </div>
+                              </div>
 
-                      {/* Dashed Grid Lines */}
-                      <line x1="0" y1="40" x2="1000" y2="40" stroke="#1E2A3F" strokeDasharray="4 4" strokeWidth="1" />
-                      <line x1="0" y1="90" x2="1000" y2="90" stroke="#1E2A3F" strokeDasharray="4 4" strokeWidth="1" />
-                      <line x1="0" y1="140" x2="1000" y2="140" stroke="#1E2A3F" strokeDasharray="4 4" strokeWidth="1" />
-
-                      {/* Area Fill */}
-                      <path
-                        d="M 0,60 Q 150,40 300,75 T 600,45 T 800,105 T 1000,70 L 1000,160 L 0,160 Z"
-                        fill="url(#curveGradient)"
-                      />
-
-                      {/* Wave Stroke */}
-                      <path
-                        d="M 0,60 Q 150,40 300,75 T 600,45 T 800,105 T 1000,70"
-                        fill="none"
-                        stroke="#0075FF"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                      />
-
-                      {/* Glowing Target Marker Point */}
-                      <line x1="450" y1="0" x2="450" y2="160" stroke="#0075FF" strokeDasharray="3 3" strokeWidth="1.5" strokeOpacity="0.7" />
-                      <circle cx="450" cy="58" r="6" fill="#0075FF" className="animate-ping opacity-75" />
-                      <circle cx="450" cy="58" r="5" fill="#0075FF" stroke="#FFFFFF" strokeWidth="2" />
-                    </svg>
-
-                    {/* Interactive Tooltip Card overlay on the curve */}
-                    <div className="absolute top-2 left-[410px] bg-c2pill/90 border border-c2border rounded-xl px-3 py-1.5 shadow-xl backdrop-blur-md">
-                      <div className="text-[9px] text-slate-400 font-mono">Live Telemetry</div>
-                      <div className="text-xs font-bold text-white font-mono">99.8% Sync</div>
-                    </div>
+                              <div className="flex items-center space-x-3">
+                                <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                  {c.status || 'CONNECTED'}
+                                </span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedClientId(c.id);
+                                    setActiveTab('terminal');
+                                  }}
+                                  className="px-3 py-1 bg-c2bg hover:bg-c2card border border-c2border hover:border-c2borderlight text-xs font-semibold text-c2cyan rounded-full transition-colors"
+                                >
+                                  Open Shell →
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
 
