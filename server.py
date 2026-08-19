@@ -526,9 +526,12 @@ if __name__ == "__main__":
     # Create loot directory
     os.makedirs(LOOT_DIR, exist_ok=True)
 
+    # Read port from environment variable (Render sets $PORT, defaults to 443 locally)
+    server_port = int(os.environ.get("PORT", 443))
+
     # Start Flask in daemon thread
     flask_thread = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=443, debug=False, use_reloader=False)
+        target=lambda: app.run(host="0.0.0.0", port=server_port, debug=False, use_reloader=False)
     )
     flask_thread.daemon = True
     flask_thread.start()
