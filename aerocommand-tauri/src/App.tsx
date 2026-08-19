@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Monitor, Terminal as TermIcon, FolderOpen, 
   Clipboard, Database, Settings, Play, Square, RefreshCw, Send, ShieldCheck, Cpu, HardDrive,
   Image as ImageIcon, FileText, FileCode, Archive, File as FileGeneric, Eye, X, ZoomIn, ZoomOut, Download, Copy, Check,
-  Search, Bell, ArrowUpRight, TrendingUp, Sparkles, User, Globe, Radio, ChevronDown, Activity, Zap
+  Search, ArrowUpRight, TrendingUp, ChevronDown, Zap
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -1980,6 +1980,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
