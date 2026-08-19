@@ -1249,55 +1249,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* OS & Arch Fleet Breakdown (Moved from Dashboard) */}
-              <div className="bg-c2card border border-c2border p-5 rounded flex flex-col">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center space-x-2">
-                    <ShieldCheck className="w-4 h-4 text-purple-400" />
-                    <h2 className="text-sm font-semibold">OS & Arch Fleet Breakdown</h2>
-                  </div>
-                  <span className="text-[10px] text-slate-500 uppercase font-bold tracking-tighter">Target Distribution</span>
-                </div>
-                <div className="grid grid-cols-2 gap-8 flex-1">
-                  <div className="space-y-4">
-                    <h3 className="text-[10px] uppercase text-slate-500 font-bold tracking-widest">Operating Systems</h3>
-                    <div className="space-y-3">
-                      {[
-                        { name: 'Windows 11', count: clients.filter(c => c.os.includes('11')).length, total: clients.length, color: 'bg-blue-500' },
-                        { name: 'Windows 10', count: clients.filter(c => c.os.includes('10')).length, total: clients.length, color: 'bg-emerald-500' },
-                        { name: 'Other', count: clients.filter(c => !c.os.includes('10') && !c.os.includes('11')).length, total: clients.length, color: 'bg-slate-600' },
-                      ].map((os) => (
-                        <div key={os.name} className="space-y-1">
-                          <div className="flex justify-between text-[10px] font-mono">
-                            <span className="text-slate-300">{os.name}</span>
-                            <span className="text-slate-500">{os.count} Target(s)</span>
-                          </div>
-                          <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden">
-                            <div 
-                              className={`h-full ${os.color} transition-all duration-500`} 
-                              style={{ width: `${os.total > 0 ? (os.count / os.total) * 100 : 0}%` }}
-                            ></div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
 
-                  <div className="flex flex-col justify-center">
-                    <h3 className="text-[10px] uppercase text-slate-500 font-bold tracking-widest mb-4">Architecture Summary</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-slate-900/50 border border-c2border p-4 rounded text-center">
-                        <div className="text-[10px] uppercase text-slate-500 font-bold mb-1">x64 (AMD64)</div>
-                        <div className="text-2xl font-bold font-mono text-c2accent">{clients.filter(c => c.os.toLowerCase().includes('64')).length}</div>
-                      </div>
-                      <div className="bg-slate-900/50 border border-c2border p-4 rounded text-center">
-                        <div className="text-[10px] uppercase text-slate-500 font-bold mb-1">x86 (i386)</div>
-                        <div className="text-2xl font-bold font-mono text-slate-400">{clients.filter(c => !c.os.toLowerCase().includes('64')).length}</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
 
               <div className="bg-c2card border border-c2border rounded overflow-hidden">
                 {clients.length === 0 ? (
