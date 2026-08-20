@@ -355,7 +355,8 @@ def post_result():
     print(f"\n{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET}")
     print(output)
     results.append({"client": client_id, "output": output, "time": timestamp})
-    db_log_command(client_id, "COMMAND_RESULT", output)
+    command_name = data.get("command", "COMMAND_RESULT")
+    db_log_command(client_id, command_name, output)
     print(PROMPT, end="", flush=True)
     return "OK", 200
 

@@ -338,7 +338,16 @@ export default function FileExplorer({
                           Raw File Content
                         </div>
                         <pre className="flex-1 text-[10px] font-mono text-slate-400 p-6 overflow-auto whitespace-pre-wrap leading-relaxed">
-                          {lootContent ? atob(lootContent) : 'Loading content...'}
+                          {lootContent ? (() => {
+                            try {
+                              const decoded = atob(lootContent);
+                              const hasNonPrintable = /[\x00-\x08\x0E-\x1F]/.test(decoded);
+                              if (hasNonPrintable) return '[Binary content — not text]';
+                              return decoded;
+                            } catch {
+                              return '[Unable to decode content]';
+                            }
+                          })() : 'Loading content...'}
                         </pre>
                       </div>
                     )}

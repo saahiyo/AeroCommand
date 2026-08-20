@@ -5,6 +5,7 @@ import Tooltip from './Tooltip';
 
 interface TerminalProps {
   clients: Client[];
+  selectedClientId: string;
   termLogs: string[];
   termInput: string;
   setTermInput: (v: string) => void;
@@ -26,7 +27,7 @@ const QUICK_COMMANDS = [
 ];
 
 export default function Terminal({
-  clients, termLogs, termInput, setTermInput,
+  clients, selectedClientId, termLogs, termInput, setTermInput,
   suggestions, setSuggestions, executeCommand, handleInputChange
 }: TerminalProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -38,12 +39,16 @@ export default function Terminal({
     }
   }, [termLogs]);
 
+  const targetDisplay = selectedClientId && clients.some(c => c.id === selectedClientId)
+    ? selectedClientId
+    : (clients.length > 0 ? clients[0].id : 'None Selected');
+
   return (
     <div className="h-full flex flex-col space-y-4">
       {/* Target header */}
       <div className="bg-c2card border border-c2border p-3 rounded flex items-center justify-between">
         <span className="text-xs font-mono text-c2accent">
-          Target: {clients.length > 0 ? clients[0].id : 'None Selected'}
+          Target: {targetDisplay}
         </span>
         <span className="text-xs text-slate-400">Interactive C2 Shell</span>
       </div>
