@@ -29,6 +29,9 @@ def require_auth(f):
     """Decorator: require a valid Bearer token on operator API requests."""
     @functools.wraps(f)
     def decorated(*args, **kwargs):
+        # Allow CORS preflight OPTIONS through without auth
+        if request.method == 'OPTIONS':
+            return f(*args, **kwargs)
         if not OPERATOR_TOKEN:
             return jsonify({"error": "Server has no operator token configured"}), 503
         token = request.headers.get("Authorization", "")
