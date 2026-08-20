@@ -132,6 +132,19 @@ AeroCommand consists of modular backend services and operator interfaces communi
    cd ..
    ```
 
+4. **Configure Environment Variables:**
+   Copy `.env.example` to `.env` and set your secrets:
+   ```powershell
+   cp .env.example .env
+   ```
+   Then edit `.env` and set:
+   ```env
+   C2_DOMAIN=http://127.0.0.1:443/
+   PORT=443
+   OPERATOR_TOKEN=your-secret-operator-token-here
+   ```
+   > **Important:** Choose a strong random token for `OPERATOR_TOKEN`. This token authenticates the operator dashboard to the server's API endpoints.
+
 ---
 
 ## Operator Guide & Deployment
@@ -218,16 +231,30 @@ The management console and interactive terminal support a comprehensive suite of
 
 ## Communication Protocol & Security Model
 
-AeroCommand uses lightweight HTTP/HTTPS communication designed for controlled telemetry testing:
+AeroCommand uses HTTP/HTTPS with hybrid RSA-2048 + AES-256-GCM encryption for all endpoint-client traffic, and Bearer token authentication for operator API access:
+
+### Endpoint ↔ Server Encryption
+- **Registration:** Client fetches the server's RSA-2048 public key, generates a random AES-256 session key, wraps it with RSA-OAEP, and sends it alongside the encrypted registration payload
+- **Subsequent requests:** All command and result traffic is AES-256-GCM encrypted using the per-client session key (nonce + tag + ciphertext, all Base64 encoded)
+- **No plaintext fallback:** Decryption failures return `None` — the channel cannot silently degrade to plaintext
 
 | Route | HTTP Method | Purpose |
 | --- | --- | --- |
-| `/register` | `POST` | Initial endpoint handshake and system telemetry payload transmission. |
-| `/cmd` | `GET` | Polling endpoint for retrieving queued operator instructions. |
-| `/result` | `POST` | Delivering execution output, diagnostics, and structured telemetry data. |
-| `/upload` | `POST` | Streaming binary artifacts and downloaded loot to the management server. |
+| `/rsa_pub` | `GET` | Server RSA-2048 public key for client key exchange |
+| `/register` | `POST` | Initial endpoint handshake and system telemetry (hybrid RSA+AES encrypted) |
+| `/cmd` | `GET` | Polling endpoint for retrieving queued operator instructions (AES encrypted) |
+| `/result` | `POST` | Delivering execution output, diagnostics, and structured telemetry data |
+| `/upload` | `POST` | Streaming binary artifacts and downloaded loot to the management server |
 
-> **Security Note:** The default transport layer uses byte-level XOR obfuscation (`XOR_KEY = 0x5A`) combined with Base64 encoding. These mechanisms are implemented strictly for telemetry testing, signature analysis research, and lab simulations, not for production security environments.
+### Operator API Authentication
+All `/api/` endpoints require a valid Bearer token set via the `OPERATOR_TOKEN` environment variable. Requests without a matching `Authorization: Bearer <token>` header are rejected with HTTP 401.
+
+| Route | HTTP Method | Purpose |
+| --- | --- | --- |
+| `/api/clients` | `GET` | List all registered endpoints (auth required) |
+| `/api/logs` | `GET` | Retrieve command history (auth required) |
+| `/api/send_command` | `POST` | Queue a command for a target endpoint (auth required) |
+| `/api/loot` | `GET` | List collected artifacts (auth required) |
 
 ---
 
