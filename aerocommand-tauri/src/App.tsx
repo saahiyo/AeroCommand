@@ -1048,8 +1048,11 @@ export default function App() {
                         />
                         <button
                           onClick={() => {
-                            localStorage.setItem('c2_server_url', c2ServerUrl.trim());
-                            showToast('Server URL saved successfully! Reconnecting to cloud...');
+                            const trimmed = c2ServerUrl.trim();
+                            localStorage.setItem('c2_server_url', trimmed);
+                            setC2ServerUrl(trimmed);
+                            showToast('Server URL saved! Testing connection...');
+                            setC2ConnectionStatus('connecting');
                           }}
                           className="px-3.5 py-2 bg-c2accent hover:bg-blue-600 text-white rounded-md text-xs font-bold transition-colors shadow-sm"
                         >
@@ -1070,8 +1073,11 @@ export default function App() {
                         />
                         <button
                           onClick={() => {
-                            localStorage.setItem('c2_operator_token', c2OperatorToken.trim());
-                            showToast('Operator token saved! Reconnecting to cloud...');
+                            const trimmed = c2OperatorToken.trim();
+                            localStorage.setItem('c2_operator_token', trimmed);
+                            setC2OperatorToken(trimmed);
+                            showToast('Operator token saved! Testing connection...');
+                            setC2ConnectionStatus('connecting');
                           }}
                           className="px-3.5 py-2 bg-c2accent hover:bg-blue-600 text-white rounded-md text-xs font-bold transition-colors shadow-sm"
                         >
