@@ -99,6 +99,14 @@ export default function App() {
             if (clientsRes.ok) {
               backendClients = await clientsRes.json();
               setC2ConnectionStatus('connected');
+            } else {
+              setC2ConnectionStatus('error');
+              let errMsg = `Server error: ${clientsRes.status}`;
+              try {
+                const body = await clientsRes.json();
+                if (body.error) errMsg = body.error;
+              } catch (_) {}
+              showToast(`Auth failed: ${errMsg}`);
             }
           } catch (e) {
             setC2ConnectionStatus('error');
