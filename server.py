@@ -172,7 +172,7 @@ def decrypt_payload(client_id=None):
         try:
             # Check if it's a plain JSON string
             data = json.loads(raw)
-        except:
+        except (json.JSONDecodeError, ValueError):
             # If not JSON, it must be encrypted binary
             aes_key = client_sessions.get(client_id) if client_id else None
             if aes_key:
