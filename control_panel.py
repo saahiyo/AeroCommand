@@ -300,6 +300,9 @@ def upload_route():
     data = decrypt_payload(raw)
     filename = data.get("name", "unknown")
     file_b64 = data.get("file", "")
+    if len(file_b64) > 150 * 1024 * 1024:
+        state.add_log(f"Rejected oversized upload from {data.get('client_id', '?')}", "warning")
+        return "File too large", 413
     try:
         file_data = base64.b64decode(file_b64)
     except Exception:
@@ -902,7 +905,7 @@ class AeroCommandPro(ctk.CTk):
         style = ttk.Style()
         try:
             style.theme_use("clam")
-        except:
+        except Exception:
             pass
         style.configure("Treeview",
             background=COLOR_BG,
@@ -1117,7 +1120,8 @@ class AeroCommandPro(ctk.CTk):
         try:
             with sqlite3.connect(DB_FILE) as conn:
                 total = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
-        except: total = 0
+        except Exception:
+            total = 0
         
         self.metrics["online"].configure(text=str(online))
         self.metrics["total"].configure(text=str(total))

