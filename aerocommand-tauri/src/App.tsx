@@ -102,6 +102,7 @@ export default function App() {
             }
           } catch (e) {
             setC2ConnectionStatus('error');
+            showToast(`Connection failed: ${e}`);
           }
 
           try {
