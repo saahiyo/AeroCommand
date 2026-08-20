@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+import functools
 import threading
 import logging
 import base64
@@ -17,7 +18,26 @@ log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
-app.logger.setLevel(logging.ERROR)
+
+# === Operator Authentication ===
+OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "")
+if not OPERATOR_TOKEN:
+    print("[!] WARNING: OPERATOR_TOKEN not set in .env — API endpoints are open!")
+    print("[!] Set OPERATOR_TOKEN in .env to protect operator API endpoints.")
+
+def require_auth(f):
+    """Decorator: require a valid Bearer token on operator API requests."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not OPERATOR_TOKEN:
+            return jsonify({"error": "Server has no operator token configured"}), 503
+        token = request.headers.get("Authorization", "")
+        if not token.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid Authorization header"}), 401
+        if token[7:] != OPERATOR_TOKEN:
+            return jsonify({"error": "Invalid operator token"}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 DB_FILE = "aerocommand.db"
 
@@ -368,6 +388,7 @@ def add_cors_headers(response):
 
 
 @app.route("/api/clients", methods=["GET", "OPTIONS"])
+@require_auth
 def api_get_clients():
     if request.method == "OPTIONS":
         return "", 200
@@ -396,6 +417,7 @@ def api_get_clients():
 
 
 @app.route("/api/logs", methods=["GET", "OPTIONS"])
+@require_auth
 def api_get_logs():
     if request.method == "OPTIONS":
         return "", 200
@@ -417,6 +439,7 @@ def api_get_logs():
 
 
 @app.route("/api/send_command", methods=["POST", "OPTIONS"])
+@require_auth
 def api_send_command():
     if request.method == "OPTIONS":
         return "", 200
@@ -438,6 +461,7 @@ def api_send_command():
 
 
 @app.route("/api/loot", methods=["GET", "OPTIONS"])
+@require_auth
 def api_get_loot():
     if request.method == "OPTIONS":
         return "", 200
