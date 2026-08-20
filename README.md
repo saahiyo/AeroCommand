@@ -1,11 +1,11 @@
 <p align="center">
-<img src="assets/banner.png" alt="AeroCommand — Remote Endpoint Monitoring and Security Telemetry" width="100%">
+<img src="assets/banner.png" alt="AeroCommand — Remote Access Trojan Framework" width="100%">
 </p>
 <p align="center">
-  <strong>Lightweight Python and Tauri C2 & endpoint administration framework for authorized monitoring, security telemetry testing, and lab demonstrations.</strong>
+  <strong>Python and Tauri-based Remote Access Trojan (RAT) with C2 server, encrypted communications, and evasion techniques.</strong>
 </p>
 <p align="center">
-  <em>Designed for isolated labs, controlled demonstrations, and approved security research.</em>
+  <em>For authorized penetration testing and red team operations only.</em>
 </p>
 
 ---
@@ -31,50 +31,53 @@
 
 ## Overview
 
-**AeroCommand** is a modern, modular client-server framework engineered for studying endpoint administration workflows, command execution pipelines, and security telemetry in controlled environments. It integrates a high-performance Rust/Python management backend, a sleek modern **Tauri v2 + React** desktop dashboard (`aerocommand-tauri/`), an alternative Python CustomTkinter control panel (`control_panel.py`), and a Windows-focused endpoint client (`client.py`) featuring live diagnostic streaming, high-performance directory exploration, and instant previewing.
+**AeroCommand** is a fully-featured Remote Access Trojan (RAT) designed for authorized penetration testing and red team operations. It consists of:
 
-The project is strictly intended for **defensive research, system administration exercises, and isolated security simulations**. It must not be used to access, monitor, control, or collect data from systems without explicit, documented permission.
+- **C2 Server** (`server.py`): Flask-based command and control server with SQLite logging
+- **Windows Client** (`client.py`): Endpoint agent with persistence, evasion, and remote execution capabilities
+- **Operator Dashboard** (`aerocommand-tauri/`): Modern Tauri v2 + React desktop GUI for remote management
+- **Alternative GUI** (`control_panel.py`): Lightweight Python CustomTkinter control panel
 
-> **Important:** Run this project exclusively on systems you own or are expressly authorized to test. Do not expose the management server to the public internet or deploy the endpoint client on third-party devices.
+**Core Features:**
+- Hybrid RSA-2048 + AES-256-GCM encrypted communications
+- Anti-VM/sandbox detection and anti-debug evasion
+- Windows Defender disabling and persistence mechanisms
+- Remote command execution, file exfiltration, and clipboard monitoring
+- Screenshot capture and process management
+
+> **⚠️ LEGAL DISCLAIMER:** This software is for authorized security testing only. Unauthorized access to computer systems is illegal. Users assume all responsibility for compliance with applicable laws.
 
 ---
 
 ## Key Capabilities
 
-| Component / Area | Functionality & Technical Implementation |
+| Category | Features |
 | --- | --- |
-| **Tauri Desktop Dashboard** | Modern Tauri v2 + React 19 + Tailwind interface featuring dark glassmorphism, real-time client status tracking, telemetry charts, interactive terminal, and process manager. |
-| **Remote File Explorer** | High-performance directory navigation powered by optimized file scanning (`os.scandir()`) and structured JSON serialization with clickable breadcrumbs, history, and quick-access folders. |
-| **Instant Live Previews** | In-modal previewing of remote images (PNG, JPG, ICO, WebP) with zoom controls and transparency support, alongside UTF-8 text/script viewer. |
-| **OneDrive & Shell Resolution** | Dynamic Windows Registry querying (`User Shell Folders`) that automatically resolves paths for folders redirected to OneDrive (Desktop, Documents, Pictures, etc.). |
-| **Telemetry & Diagnostics** | Real-time CPU, RAM, Network, and Disk usage metrics along with system information, process listing, and process termination. |
-| **Command Delivery** | Interactive terminal queuing with real-time polling, result delivery, and SQLite execution history. |
-| **Artifact Collection** | One-click artifact downloads and loot gallery organized under `./loot/<hostname>/`. |
-| **Clipboard Stream** | Real-time clipboard monitoring with automatic logging to the management server. |
+| **Evasion & Stealth** | Anti-VM/sandbox detection, anti-debug checks, console window hiding, randomized user-agents, jittered polling intervals |
+| **Persistence** | Startup folder copy + Registry Run key (dual persistence), survives system reboots |
+| **Defense Evasion** | Windows Defender real-time protection disabling, registry policy modifications |
+| **Remote Execution** | Arbitrary shell command execution, built-in commands (sysinfo, ps, screenshot, etc.) |
+| **Data Exfiltration** | File download/upload, clipboard monitoring, screenshot capture |
+| **File System** | Directory browsing with `os.scandir()`, instant image/text previews, OneDrive path resolution |
+| **Process Management** | Process listing with details, process termination by PID/name |
+| **C2 Communications** | Hybrid RSA-2048 + AES-256-GCM encryption, session key exchange, no plaintext fallback |
+| **Operator Interface** | Tauri v2 + React dashboard, real-time telemetry, interactive terminal, SQLite logging |
 
 ---
 
 ## System Architecture
 
-AeroCommand consists of modular backend services and operator interfaces communicating over standard HTTP/HTTPS with XOR obfuscation:
-
-| Component | Path / File | Responsibility |
-| --- | --- | --- |
-| **Tauri Desktop App** | `aerocommand-tauri/` | Modern Rust + React desktop GUI with live client metrics, terminal, process manager, and remote file explorer. |
-| **Management Server** | `server.py` | Standalone Flask-based management server with SQLite session & command logging (`aerocommand.db`). |
-| **CustomTkinter GUI** | `control_panel.py` | Lightweight Python desktop GUI for operator management and loot visualization. |
-| **Endpoint Client** | `client.py` | Polling client supporting diagnostics, instant previews, file browsing, persistence checks, and command execution. |
-
 ```
 ┌─────────────────────────────────────────┐       HTTP Polling / JSON       ┌──────────────────────────┐
-│         AeroCommand Control Panel       │  ◄────────────────────────────► │     Windows Endpoint     │
-│       Tauri v2 GUI / server.py          │                                 │        client.py         │
+│         AeroCommand C2 Server           │  ◄────────────────────────────► │     Windows Client       │
+│       Tauri v2 GUI / server.py          │         (AES-256-GCM)           │        client.py         │
 │                                         │                                 │                          │
-│  • Real-time Telemetry Dashboard        │                                 │  • System Diagnostics    │
-│  • Remote File Explorer & Previews      │                                 │  • Live File Previews    │
-│  • Interactive Command Terminal         │                                 │  • Process Telemetry     │
-│  • Process Manager & Termination        │                                 │  • Result Delivery       │
-│  • Loot Gallery & SQLite Logs           │                                 │  • Shell Resolution      │
+│  • Command Queuing & Dispatch           │                                 │  • Anti-VM Detection     │
+│  • SQLite Session & Logging             │                                 │  • Defender Bypass       │
+│  • Encrypted Communications             │                                 │  • Persistence Mechanisms│
+│  • Real-time Telemetry Dashboard        │                                 │  • Remote Execution      │
+│  • File Explorer & Previews             │                                 │  • Clipboard Monitoring  │
+│  • Process Manager                      │                                 │  • Screenshot Capture    │
 └─────────────────────────────────────────┘                                 └──────────────────────────┘
 ```
 
@@ -84,21 +87,21 @@ AeroCommand consists of modular backend services and operator interfaces communi
 
 ```
 .
-├── aerocommand-tauri/        # Tauri v2 + React 19 operator desktop application
-│   ├── src/                  # React dashboard, terminal, file explorer, preview modal
-│   └── src-tauri/            # Rust C2 backend, DB handlers, and native bridge
+├── aerocommand-tauri/        # Tauri v2 + React operator dashboard
+│   ├── src/                  # React frontend (terminal, file explorer, previews)
+│   └── src-tauri/            # Rust backend (DB handlers, native bridge)
 ├── assets/                   # Graphical assets and banners
-├── build/                    # Build artifacts and intermediate files
+├── build/                    # Build artifacts
 ├── dist/                     # Compiled PyInstaller executables (e.g., WindowsUpdate.exe)
-├── loot/                     # Downloaded files, screenshots, and collected artifacts
+├── loot/                     # Exfiltrated files organized by hostname
 ├── venv/                     # Python virtual environment
-├── client.py                 # Windows endpoint agent (diagnostics, scandir, previews)
-├── client.spec               # PyInstaller standalone build specification
-├── control_panel.py          # Alternative CustomTkinter Python desktop GUI
-├── server.py                 # Standalone Flask-based C2 management server
-├── requirements.txt          # Python dependencies (Flask, Pillow, requests, etc.)
-├── aerocommand.db            # SQLite history and client records
-└── README.md                 # Project documentation
+├── client.py                 # Windows RAT agent with evasion capabilities
+├── client.spec               # PyInstaller build specification
+├── control_panel.py          # Alternative CustomTkinter GUI
+├── server.py                 # Flask C2 server with encrypted communications
+├── requirements.txt          # Python dependencies
+├── aerocommand.db            # SQLite database for session/command logging
+└── README.md                 # This documentation
 ```
 
 ---
@@ -193,87 +196,108 @@ The compiled executable will be generated at:
 
 ## Command Reference
 
-The management console and interactive terminal support a comprehensive suite of endpoint administration commands:
+The C2 server supports remote command execution on compromised endpoints:
 
-### Session & Diagnostics
-
-| Command | Description |
-| --- | --- |
-| `sysinfo` | Retrieves hardware specs, OS version, active user, network configuration, and administrator privileges. |
-| `ps` | Lists running processes with PID, memory usage, CPU percentage, and window titles in structured JSON. |
-| `killproc <pid/name>` | Terminates a target process on the remote endpoint. |
-| `screenshot` | Captures the remote screen and saves the image to `./loot/<hostname>/`. |
-| `pwd` | Returns the current working directory of the agent process. |
-| `cd <path>` | Changes the current working directory on the remote endpoint. |
-
-### File Exploration & Previews
+### Remote Execution
 
 | Command | Description |
 | --- | --- |
-| `ls [path]` | High-speed directory listing returning structured JSON (`[JSON_FILES]`) with type, size, and modification date. |
-| `preview <path>` | Streams an instant preview of images (PNG, JPG, ICO, WebP) or UTF-8 text files to the preview modal. |
-| `download <path>` | Downloads a remote file and saves it securely into the local loot store. |
-| `upload <url> <dst>` | Instructs the remote client to download a file from an approved URL to the specified destination. |
+| `sysinfo` | Gather system information (hostname, OS, user, admin status, network) |
+| `ps` | List running processes with PID, memory, CPU, and window titles |
+| `killproc <pid/name>` | Terminate a process by PID or name |
+| `screenshot` | Capture screen and upload to C2 server |
+| `cd <path>` | Change working directory on remote endpoint |
+| `pwd` | Display current working directory |
+| `ls [path]` | List directory contents with file details |
+| `download <path>` | Exfiltrate file from target to C2 server |
+| `upload <url> <dst>` | Download file from URL to target system |
 
-### Utilities & Telemetry
+### Data Collection
 
 | Command | Description |
 | --- | --- |
-| `clip` | Reads the current clipboard text buffer. |
-| `clipwatch` | Starts real-time clipboard monitoring and logs changes to the management server. |
-| `clipstop` | Stops clipboard monitoring. |
-| `sleep <seconds>` | Adjusts the client polling interval dynamically (1–3600 seconds). |
-| `dialog <title> \| <msg>` | Displays a native Windows alert message box on the client desktop. |
-| `persist` | Verifies or establishes startup persistence in the user Startup folder. |
-| `kill` | Commands the client process to self-destruct and exit cleanly. |
+| `clip` | Read current clipboard contents |
+| `clipwatch` | Start real-time clipboard monitoring (logs changes to C2) |
+| `clipstop` | Stop clipboard monitoring |
+| `preview <path>` | Preview images or text files from target system |
+
+### Persistence & Evasion
+
+| Command | Description |
+| --- | --- |
+| `persist` | Re-apply persistence (Startup folder + Registry Run key) |
+| `sleep <seconds>` | Adjust polling interval (1-3600 seconds) |
+| `dialog <title> \| <msg>` | Display Windows message box on target |
+| `kill` | Self-destruct client (remove persistence + delete executable) |
 
 ---
 
 ## Communication Protocol & Security Model
 
-AeroCommand uses HTTP/HTTPS with hybrid RSA-2048 + AES-256-GCM encryption for all endpoint-client traffic, and Bearer token authentication for operator API access:
+AeroCommand uses HTTP/HTTPS with hybrid RSA-2048 + AES-256-GCM encryption for all C2 communications:
 
-### Endpoint ↔ Server Encryption
-- **Registration:** Client fetches the server's RSA-2048 public key, generates a random AES-256 session key, wraps it with RSA-OAEP, and sends it alongside the encrypted registration payload
-- **Subsequent requests:** All command and result traffic is AES-256-GCM encrypted using the per-client session key (nonce + tag + ciphertext, all Base64 encoded)
-- **No plaintext fallback:** Decryption failures return `None` — the channel cannot silently degrade to plaintext
+### Encryption Implementation
+- **Key Exchange:** Client fetches RSA-2048 public key, generates AES-256 session key, wraps with RSA-OAEP
+- **Data Protection:** All traffic encrypted with AES-256-GCM (nonce + tag + ciphertext, Base64 encoded)
+- **No Fallback:** Decryption failures return `None` — channel cannot degrade to plaintext
 
-| Route | HTTP Method | Purpose |
+### C2 Endpoints
+
+| Route | Method | Purpose |
 | --- | --- | --- |
-| `/rsa_pub` | `GET` | Server RSA-2048 public key for client key exchange |
-| `/register` | `POST` | Initial endpoint handshake and system telemetry (hybrid RSA+AES encrypted) |
-| `/cmd` | `GET` | Polling endpoint for retrieving queued operator instructions (AES encrypted) |
-| `/result` | `POST` | Delivering execution output, diagnostics, and structured telemetry data |
-| `/upload` | `POST` | Streaming binary artifacts and downloaded loot to the management server |
+| `/rsa_pub` | GET | Server RSA-2048 public key for key exchange |
+| `/register` | POST | Client registration with hybrid RSA+AES encryption |
+| `/cmd` | GET | Command polling (AES encrypted responses) |
+| `/result` | POST | Result delivery (AES encrypted payloads) |
+| `/upload` | POST | File exfiltration to C2 server |
 
-### Operator API Authentication
-All `/api/` endpoints require a valid Bearer token set via the `OPERATOR_TOKEN` environment variable. Requests without a matching `Authorization: Bearer <token>` header are rejected with HTTP 401.
+### Operator API (Bearer Token Auth)
 
-| Route | HTTP Method | Purpose |
+| Route | Method | Purpose |
 | --- | --- | --- |
-| `/api/clients` | `GET` | List all registered endpoints (auth required) |
-| `/api/logs` | `GET` | Retrieve command history (auth required) |
-| `/api/send_command` | `POST` | Queue a command for a target endpoint (auth required) |
-| `/api/loot` | `GET` | List collected artifacts (auth required) |
+| `/api/clients` | GET | List registered endpoints |
+| `/api/logs` | GET | Retrieve command history |
+| `/api/send_command` | POST | Queue commands for targets |
+| `/api/loot` | GET | List exfiltrated artifacts |
 
 ---
 
-## Troubleshooting & FAQ
+## Troubleshooting
 
-### Common Issues and Solutions
+### Common Issues
 
-1. **Tauri Build Errors (`pnpm tauri dev`):**
-   - *Cause:* Missing Rust toolchain or WebView2 runtime.
-   - *Solution:* Ensure Rust is installed (`rustc --version`) and Visual Studio C++ build tools are present on Windows.
+1. **Tauri Build Errors:**
+   - Missing Rust toolchain or WebView2 runtime
+   - Install Visual Studio C++ build tools
+
 2. **Client Connection Refused:**
-   - *Cause:* `C2_DOMAIN` mismatch or management server not running.
-   - *Solution:* Verify `server.py` is active on the designated port and that Windows Firewall permits local loopback/network connections in your lab.
-3. **PyInstaller Executable Flagged by Defender:**
-   - *Cause:* Standard behavior for script-based packers (`pyinstaller`) compiled with generic names in lab environments.
-   - *Solution:* Add an exclusion path in Windows Defender for your isolated lab directory during authorized testing.
+   - `C2_DOMAIN` mismatch or server not running
+   - Verify server is active on correct port
+
+3. **Defender Detection:**
+   - Expected behavior — RAT executables are flagged
+   - Add exclusion in Windows Defender for testing environments
 
 ---
 
-## Disclaimer
+## Disclaimer & Legal Warning
 
-> **FOR EDUCATIONAL AND AUTHORIZED SECURITY RESEARCH / LAB TESTING ONLY.** AeroCommand is intended solely for authorized system administration, security auditing, and educational simulations in isolated laboratory environments. Unauthorized access to computer systems, interception of data, persistence on devices, or collection of information is illegal under applicable local, national, and international laws. The maintainers and contributors assume no liability for misuse or damage caused by this software.
+> **⚠️ FOR AUTHORIZED PENETRATION TESTING ONLY**
+> 
+> AeroCommand is a Remote Access Trojan (RAT) designed for:
+> - Authorized penetration testing engagements
+> - Red team operations with written authorization
+> - Security research in isolated lab environments
+> 
+> **LEGAL REQUIREMENTS:**
+> - You MUST have explicit written authorization before using this software
+> - Unauthorized access to computer systems is illegal under CFAA, CMA, and similar laws
+> - This software is provided "as is" without warranty
+> - Users assume all legal responsibility for their actions
+> 
+> **PROHIBITED USES:**
+> - Unauthorized access to any computer system
+> - Accessing systems without explicit permission
+> - Any activity violating local, national, or international laws
+> 
+> The developers assume no liability for misuse or damage caused by this software.
