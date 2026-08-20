@@ -27,7 +27,7 @@ export default function App() {
   const [c2OperatorToken, setC2OperatorToken] = useState<string>(() => localStorage.getItem('c2_operator_token') || '');
   const [c2Mode, setC2Mode] = useState<'cloud' | 'local'>(() => (localStorage.getItem('c2_mode') as any) || 'cloud');
   const [c2ConnectionStatus, setC2ConnectionStatus] = useState<'connected' | 'connecting' | 'error'>('connecting');
-  const authHeader = { 'Authorization': `Bearer ${c2OperatorToken}` };
+  const authHeader = React.useMemo(() => ({ 'Authorization': `Bearer ${c2OperatorToken}` }), [c2OperatorToken]);
 
   // ---- Client / Log State ----
   const [clients, setClients] = useState<Client[]>([]);
