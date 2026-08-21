@@ -5,7 +5,7 @@ interface EndpointsProps {
   clients: Client[];
   selectedClientId: string;
   setSelectedClientId: (id: string) => void;
-  setActiveTab: (tab: 'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'clipboard' | 'database' | 'settings') => void;
+  setActiveTab: (tab: 'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'apps' | 'clipboard' | 'database' | 'settings') => void;
   onRefreshClients: () => void;
 }
 

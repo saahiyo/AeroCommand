@@ -41,6 +41,17 @@ export interface LootFile {
   client: string;
 }
 
+export interface InstalledApp {
+  name: string;
+  version: string;
+  publisher: string;
+  location: string;
+  date: string;
+  size: string;
+  uninstall: string;
+  icon_path: string;
+}
+
 export interface ProcessEntry {
   name: string;
   pid: string;

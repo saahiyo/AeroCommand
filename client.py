@@ -1136,6 +1136,108 @@ def preview_file(path):
 
 
 # ============================================================
+#  Installed Apps Enumeration
+# ============================================================
+_last_apps_cache = []  # populated by the "apps" command, reused by "appicons"
+
+APP_UNINSTALL_KEYS = (
+    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+)
+
+
+def _get_installed_apps():
+    """Enumerate installed applications from registry uninstall keys"""
+    apps = {}
+    for hive, subkey in APP_UNINSTALL_KEYS:
+        try:
+            with winreg.OpenKey(hive, subkey) as base:
+                i = 0
+                while True:
+                    try:
+                        key_name = winreg.EnumKey(base, i)
+                        i += 1
+                    except OSError:
+                        break
+                    try:
+                        with winreg.OpenKey(base, key_name) as k:
+                            def get_val(name):
+                                try:
+                                    v, _ = winreg.QueryValueEx(k, name)
+                                    return v
+                                except OSError:
+                                    return None
+
+                            name = get_val("DisplayName")
+                            if not name or not str(name).strip():
+                                continue
+                            # Skip hotfixes/updates noise and broken template entries
+                            if name.startswith("KB") or "Update for Microsoft" in name or "Security Update" in name:
+                                continue
+                            if "${" in name or "{{" in name or name.lower().startswith("{"):
+                                continue
+
+                            size_kb = get_val("EstimatedSize")
+                            raw_date = str(get_val("InstallDate") or "")
+                            # Registry dates come as YYYYMMDD
+                            install_date = (f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                                            if len(raw_date) == 8 and raw_date.isdigit() else "")
+
+                            icon_loc = str(get_val("DisplayIcon") or "").split(",")[0].strip().strip('"')
+
+                            entry = {
+                                "name": str(name).strip(),
+                                "version": str(get_val("DisplayVersion") or "").strip(),
+                                "publisher": str(get_val("Publisher") or "").strip(),
+                                "location": str(get_val("InstallLocation") or "").strip(),
+                                "date": install_date,
+                                "size": _format_size(size_kb * 1024) if isinstance(size_kb, (int, float)) and size_kb > 0 else "",
+                                "uninstall": str(get_val("UninstallString") or "").strip(),
+                                "icon_path": icon_loc,
+                            }
+                            key = entry["name"].lower()
+                            # Keep first occurrence; HKLM entries beat HKCU dupes by order
+                            if key not in apps:
+                                apps[key] = entry
+                    except (OSError, PermissionError):
+                        continue
+        except (OSError, PermissionError):
+            continue
+
+    result = sorted(apps.values(), key=lambda a: a["name"].lower())
+    return result
+
+
+def _collect_app_icons(apps, max_total_bytes=400 * 1024, max_per_icon=100 * 1024):
+    """Extract small standalone icon files (.ico/.png/.bmp) as data URIs.
+    EXE-embedded icons can't be extracted without PE parsing — those fall back
+    to frontend letter tiles."""
+    icons = {}
+    total = 0
+    for app in apps:
+        loc = app.get("icon_path", "")
+        if not loc or not os.path.isfile(loc):
+            continue
+        ext = os.path.splitext(loc)[1].lower()
+        if ext not in ('.ico', '.png', '.bmp'):
+            continue
+        try:
+            if os.path.getsize(loc) > max_per_icon:
+                continue
+            with open(loc, "rb") as f:
+                raw = f.read()
+            if total + len(raw) > max_total_bytes:
+                break
+            mime = {'.ico': 'image/x-icon', '.png': 'image/png', '.bmp': 'image/bmp'}[ext]
+            icons[app["name"]] = f"data:{mime};base64,{base64.b64encode(raw).decode('utf-8')}"
+            total += len(raw)
+        except (OSError, PermissionError):
+            continue
+    return icons
+
+
+# ============================================================
 #  Command Execution
 # ============================================================
 def execute_command(cmd):
@@ -1151,6 +1253,21 @@ def execute_command(cmd):
 
         elif cmd == "ps":
             return get_process_list()
+
+        elif cmd == "apps":
+            global _last_apps_cache
+            try:
+                _last_apps_cache = _get_installed_apps()
+                return "[JSON_APPS]" + json.dumps({"items": _last_apps_cache, "count": len(_last_apps_cache)})
+            except Exception as e:
+                return "[JSON_APPS]" + json.dumps({"items": [], "count": 0, "error": str(e)})
+
+        elif cmd == "appicons":
+            try:
+                icons = _collect_app_icons(_last_apps_cache)
+                return "[JSON_ICONS]" + json.dumps({"icons": icons})
+            except Exception as e:
+                return "[JSON_ICONS]" + json.dumps({"icons": {}, "error": str(e)})
 
         elif cmd.startswith("killproc "):
             target = cmd[9:].strip().strip('"').strip("'")
