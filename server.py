@@ -141,14 +141,30 @@ from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
 
 # Generate or load server RSA key pair
+# Priority: 1) RSA_PRIVATE_KEY env var (base64-encoded PEM — for cloud/Render)
+#           2) server_rsa.pem file (local dev)
+#           3) Generate new key pair
 RSA_KEY_FILE = "server_rsa.pem"
-if os.path.exists(RSA_KEY_FILE):
+_rsa_env = os.getenv("RSA_PRIVATE_KEY", "").strip()
+if _rsa_env:
+    try:
+        pem_bytes = base64.b64decode(_rsa_env)
+        server_rsa_key = RSA.import_key(pem_bytes)
+        print("[+] RSA key loaded from RSA_PRIVATE_KEY environment variable")
+    except Exception as e:
+        print(f"[!] Failed to load RSA_PRIVATE_KEY env var: {e}")
+        print("[!] Generating new RSA key pair as fallback...")
+        server_rsa_key = RSA.generate(2048)
+elif os.path.exists(RSA_KEY_FILE):
     with open(RSA_KEY_FILE, "rb") as f:
         server_rsa_key = RSA.import_key(f.read())
+    print(f"[+] RSA key loaded from {RSA_KEY_FILE}")
 else:
     server_rsa_key = RSA.generate(2048)
     with open(RSA_KEY_FILE, "wb") as f:
         f.write(server_rsa_key.export_key())
+    print(f"[+] New RSA key pair generated and saved to {RSA_KEY_FILE}")
+
 
 server_rsa_public = server_rsa_key.publickey().export_key().decode()
 
