@@ -90,6 +90,66 @@ def broadcast(event: dict):
                 event_queues.remove(q)
 
 
+def format_console_payload(output: str) -> str:
+    """Render structured [JSON_*] payloads as readable console tables.
+    Base64 blobs (previews, icons) are summarized, never dumped."""
+    tag = None
+    for candidate in ("[JSON_FILES]", "[JSON_PROCS]", "[JSON_APPS]", "[JSON_ICONS]", "[JSON_PREVIEW]"):
+        if output.startswith(candidate):
+            tag = candidate
+            break
+    if tag is None:
+        return output
+    try:
+        data = json.loads(output[len(tag):])
+    except Exception:
+        return output  # malformed — show raw so corruption is visible
+
+    if tag == "[JSON_FILES]":
+        items = data.get("items", [])
+        tail = ", TRUNCATED" if data.get("truncated") else ""
+        lines = [f"Directory: {data.get('path', '?')}  ({data.get('count', len(items))} items{tail})"]
+        dirs = sorted((i for i in items if i.get("is_dir")), key=lambda x: x.get("name", "").lower())
+        files = sorted((i for i in items if not i.get("is_dir")), key=lambda x: x.get("name", "").lower())
+        for i in dirs:
+            lines.append(f"   <DIR>   {'':>9}  {i.get('date', ''):<16} {i.get('name', '')}")
+        for i in files:
+            lines.append(f"           {i.get('size', '')[:9]:>9}  {i.get('date', ''):<16} {i.get('name', '')}")
+        return "\n".join(lines)
+
+    if tag == "[JSON_PROCS]":
+        procs = data if isinstance(data, list) else []
+        lines = [f"Running processes: {len(procs)}"]
+        for p in procs[:60]:
+            title = (p.get("title") or "")[:38]
+            lines.append(f"  {str(p.get('pid', '')):>7}  {(p.get('mem') or ''):>10}  {p.get('name', ''):<26} {title}")
+        if len(procs) > 60:
+            lines.append(f"  ... {len(procs) - 60} more (full list in DB/GUI)")
+        return "\n".join(lines)
+
+    if tag == "[JSON_APPS]":
+        apps = data.get("items", [])
+        lines = []
+        if data.get("error"):
+            lines.append(f"[!] Scan error: {data['error']}")
+        lines.append(f"Installed applications: {len(apps)}")
+        for n, a in enumerate(sorted(apps, key=lambda x: x.get("name", "").lower()), 1):
+            lines.append(f"  {n:>3}. {a.get('name', '')[:46]:<46} {(a.get('version') or '')[:11]:<11} "
+                         f"{(a.get('size') or '')[:8]:>8}  {(a.get('publisher') or '')[:30]}")
+        return "\n".join(lines)
+
+    if tag == "[JSON_ICONS]":
+        base = f"App icons extracted: {len(data.get('icons', {}))}"
+        return f"{base}  [!] {data['error']}" if data.get("error") else base
+
+    # PREVIEW — summarize only; 'data' (b64) and 'content' stay out of the console
+    status = data.get("status", "?")
+    if status == "ok":
+        return f"Preview OK ({data.get('type', '?')}, {data.get('size', '?')}): {data.get('name', '?')} — delivered to GUI"
+    msg = data.get("message") or data.get("error") or ""
+    return f"Preview {status}: {msg}"
+
+
 def _clients_payload():
     """Shape infected_clients into the same dict list /api/clients returns."""
     client_list = []
@@ -524,8 +584,9 @@ def post_result():
     # goes to DB/UI only. Local interactive sessions default to verbose.
     command_name = data.get("command", "COMMAND_RESULT")
     if _verbose_console:
-        shown = output[:VERBOSE_CONSOLE_CAP]
-        suffix = f"\n{C.GRAY}[!] Output truncated at {VERBOSE_CONSOLE_CAP // 1024}KB (full result in DB/GUI){C.RESET}" if len(output) > VERBOSE_CONSOLE_CAP else ""
+        body = format_console_payload(output)
+        shown = body[:VERBOSE_CONSOLE_CAP]
+        suffix = f"\n{C.GRAY}[!] Output truncated at {VERBOSE_CONSOLE_CAP // 1024}KB (full result in DB/GUI){C.RESET}" if len(body) > VERBOSE_CONSOLE_CAP else ""
         print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} {command_name}")
         print(f"{shown}{suffix}")
     else:
