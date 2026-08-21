@@ -10,9 +10,11 @@ import json
 import sqlite3
 import sys
 from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # Cloud hosts inject env vars directly — .env loading is optional
 
 # Force UTF-8 console output — cp1252 terminals crash on ✓/emoji prints (500s on /register)
 for _stream in (sys.stdout, sys.stderr):
