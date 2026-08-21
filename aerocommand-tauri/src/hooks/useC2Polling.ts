@@ -16,6 +16,7 @@ interface UseC2PollingOpts {
   setIsProcessesLoading: (v: boolean) => void;
   setPreviewOpen: (v: boolean) => void;
   setPreviewData: (v: PreviewData | null) => void;
+  setIsPreviewLoading: (v: boolean) => void;
   parseFileList: (output: string) => void;
   appendTermLog: (lines: string[]) => void;
   setC2ConnectionStatus: (s: 'connected' | 'connecting' | 'error') => void;
@@ -27,7 +28,7 @@ export function useC2Polling(opts: UseC2PollingOpts) {
     activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader,
     setClients, setLogs, setLootFiles,
     setProcessList, setIsProcessesLoading,
-    setPreviewOpen, setPreviewData,
+    setPreviewOpen, setPreviewData, setIsPreviewLoading,
     parseFileList, appendTermLog,
     setC2ConnectionStatus, showToast,
   } = opts;
@@ -101,6 +102,12 @@ export function useC2Polling(opts: UseC2PollingOpts) {
         setLogs(backendLogs);
         logsRef.current = backendLogs;
 
+        // Mirror executeCommand's target fallback so we accept output from
+        // whichever client commands are actually being sent to
+        const effectiveTarget = selectedClientId && backendClients.some(c => c.id === selectedClientId)
+          ? selectedClientId
+          : (backendClients[0]?.id || '');
+
         const newTermLines: string[] = [];
         // Server returns logs newest-first; process chronologically so older
         // stragglers can never overwrite newer responses in the UI
@@ -108,17 +115,17 @@ export function useC2Polling(opts: UseC2PollingOpts) {
           if (printedIdsRef.current.has(log.id)) return;
           // Only accept structured output from the currently targeted client —
           // another machine's ls/ps/preview must never hijack this operator's view
-          const fromTarget = !selectedClientId || log.client_id === selectedClientId;
+          const fromTarget = !effectiveTarget || log.client_id === effectiveTarget;
           if (log.output.includes('[JSON_PREVIEW]')) {
             printedIdsRef.current.add(log.id);
             if (!fromTarget) return;
             try {
-              const jsonStr = log.output.replace('[JSON_PREVIEW]', '');
-              const parsed = JSON.parse(jsonStr);
-              if (parsed.status === 'ok' && parsed.type === 'image') {
-                setPreviewOpen(true);
-                setPreviewData(parsed);
-              }
+              const parsed = JSON.parse(log.output.replace('[JSON_PREVIEW]', ''));
+              // Surface every outcome — ok, error, unsupported — so the modal
+              // never hangs on its loading spinner
+              setPreviewData(parsed);
+              setIsPreviewLoading(false);
+              if (parsed.status === 'ok') setPreviewOpen(true);
             } catch {}
           } else if (log.output.includes('[JSON_PROCS]')) {
             printedIdsRef.current.add(log.id);
@@ -156,5 +163,5 @@ export function useC2Polling(opts: UseC2PollingOpts) {
       clearInterval(interval);
       abortControllers.forEach(ac => ac.abort());
     };
-  }, [activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader, setC2ConnectionStatus, showToast, parseFileList, appendTermLog, setClients, setLogs, setLootFiles, setProcessList, setIsProcessesLoading, setPreviewOpen, setPreviewData]);
+  }, [activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader, setC2ConnectionStatus, showToast, parseFileList, appendTermLog, setClients, setLogs, setLootFiles, setProcessList, setIsProcessesLoading, setPreviewOpen, setPreviewData, setIsPreviewLoading]);
 }
