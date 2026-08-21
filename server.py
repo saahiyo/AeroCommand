@@ -204,25 +204,47 @@ from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
 
 # Generate or load server RSA key pair
-# Priority: 1) RSA_PRIVATE_KEY env var (base64-encoded PEM — for cloud/Render)
+# Priority: 1) RSA_PRIVATE_KEY env var — accepts base64-encoded PEM, raw PEM with
+#              literal \n escapes, or a quoted multi-line PEM (cloud/Render)
 #           2) server_rsa.pem file (local dev)
-#           3) Generate new key pair
+#           3) Generate new key pair (persisted so restarts keep sessions alive)
 RSA_KEY_FILE = "server_rsa.pem"
+
+
+def _import_pem_candidates(env_value: str):
+    """Yield byte candidates for the env var in the formats operators commonly paste."""
+    try:
+        yield base64.b64decode(env_value)
+    except Exception:
+        pass
+    yield env_value.replace("\\n", "\n").encode()
+    yield env_value.encode()
+
+
+server_rsa_key = None
 _rsa_env = os.getenv("RSA_PRIVATE_KEY", "").strip()
 if _rsa_env:
+    for cand in _import_pem_candidates(_rsa_env):
+        try:
+            server_rsa_key = RSA.import_key(cand)
+            print("[+] RSA key loaded from RSA_PRIVATE_KEY environment variable")
+            break
+        except Exception:
+            continue
+    if server_rsa_key is None:
+        print(f"[!] RSA_PRIVATE_KEY env var is set but unreadable (expected base64-encoded "
+              f"PEM: python -c \"import base64;print(base64.b64encode(open('server_rsa.pem','rb').read()).decode())\")")
+        print("[!] Falling back to key file / fresh generation...")
+
+if server_rsa_key is None and os.path.exists(RSA_KEY_FILE):
     try:
-        pem_bytes = base64.b64decode(_rsa_env)
-        server_rsa_key = RSA.import_key(pem_bytes)
-        print("[+] RSA key loaded from RSA_PRIVATE_KEY environment variable")
-    except Exception as e:
-        print(f"[!] Failed to load RSA_PRIVATE_KEY env var: {e}")
-        print("[!] Generating new RSA key pair as fallback...")
-        server_rsa_key = RSA.generate(2048)
-elif os.path.exists(RSA_KEY_FILE):
-    with open(RSA_KEY_FILE, "rb") as f:
-        server_rsa_key = RSA.import_key(f.read())
-    print(f"[+] RSA key loaded from {RSA_KEY_FILE}")
-else:
+        with open(RSA_KEY_FILE, "rb") as f:
+            server_rsa_key = RSA.import_key(f.read())
+        print(f"[+] RSA key loaded from {RSA_KEY_FILE}")
+    except Exception:
+        server_rsa_key = None
+
+if server_rsa_key is None:
     server_rsa_key = RSA.generate(2048)
     with open(RSA_KEY_FILE, "wb") as f:
         f.write(server_rsa_key.export_key())
