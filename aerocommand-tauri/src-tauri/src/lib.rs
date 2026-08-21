@@ -233,9 +233,33 @@ fn get_loot() -> Vec<LootFile> {
     loot
 }
 
+fn is_safe_loot_path(requested: &str) -> Result<std::path::PathBuf, String> {
+    let p = Path::new(requested);
+    // Reject directory traversal sequences and absolute paths outside loot
+    if requested.contains("..") {
+        return Err("Path traversal detected".to_string());
+    }
+    let canonical_loot = std::fs::canonicalize("loot").unwrap_or_else(|_| std::path::PathBuf::from("loot"));
+    let canonical_req = std::fs::canonicalize(p).map_err(|e| format!("Invalid path: {}", e))?;
+    if !canonical_req.starts_with(&canonical_loot) {
+        return Err("Access denied: path outside loot directory".to_string());
+    }
+    Ok(canonical_req)
+}
+
+fn sanitize_filename(name: &str) -> String {
+    // Strip directory components, keep only file name, replace unsafe chars
+    let base = Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    base.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' ) { c } else { '_' }).collect()
+}
+
 #[tauri::command]
 fn get_loot_file(path: String) -> Result<String, String> {
-    let content = std::fs::read(path).map_err(|e| e.to_string())?;
+    let safe = is_safe_loot_path(&path)?;
+    let content = std::fs::read(&safe).map_err(|e| e.to_string())?;
+    if content.len() > 10 * 1024 * 1024 {
+        return Err("File too large".to_string());
+    }
     Ok(general_purpose::STANDARD.encode(content))
 }
 
@@ -262,7 +286,24 @@ pub struct PreviewData {
 
 #[tauri::command]
 fn preview_file(path: String) -> PreviewData {
-    let p = Path::new(&path);
+    // Security: only allow preview from loot directory
+    let safe_path = match is_safe_loot_path(&path) {
+        Ok(p) => p,
+        Err(msg) => {
+            return PreviewData {
+                status: "error".to_string(),
+                r#type: None,
+                name: Some(Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string()),
+                path: Some(path),
+                mime: None,
+                data: None,
+                content: None,
+                size: None,
+                message: Some(msg),
+            };
+        }
+    };
+    let p = safe_path.as_path();
     if !p.exists() {
         return PreviewData {
             status: "error".to_string(),
@@ -616,11 +657,30 @@ pub fn run() {
                         }
 
                         if let Ok(file_bytes) = general_purpose::STANDARD.decode(b64_data) {
-                            let client_loot_dir = std::path::Path::new("loot").join(&host);
-                            let _ = std::fs::create_dir_all(&client_loot_dir);
-                            let save_path = client_loot_dir.join(filename);
-                            let _ = std::fs::write(save_path, file_bytes);
-                            println!("[+] Saved file {} for client {}", filename, host);
+                            if file_bytes.len() > 50 * 1024 * 1024 {
+                                println!("[!] Rejected oversized upload {} ({} bytes)", filename, file_bytes.len());
+                            } else {
+                                let safe_name = sanitize_filename(filename);
+                                let safe_host = sanitize_filename(&host);
+                                let client_loot_dir = std::path::Path::new("loot").join(&safe_host);
+                                let _ = std::fs::create_dir_all(&client_loot_dir);
+                                let save_path = client_loot_dir.join(&safe_name);
+                                // Ensure save_path is still inside loot
+                                if let Ok(canonical_loot) = std::fs::canonicalize("loot") {
+                                    if let Ok(canonical_parent) = std::fs::canonicalize(&client_loot_dir) {
+                                        if canonical_parent.starts_with(canonical_loot) {
+                                            let _ = std::fs::write(&save_path, file_bytes);
+                                            println!("[+] Saved file {} for client {}", safe_name, safe_host);
+                                        }
+                                    } else {
+                                        let _ = std::fs::write(&save_path, file_bytes);
+                                        println!("[+] Saved file {} for client {}", safe_name, safe_host);
+                                    }
+                                } else {
+                                    let _ = std::fs::write(&save_path, file_bytes);
+                                    println!("[+] Saved file {} for client {}", safe_name, safe_host);
+                                }
+                            }
                         }
                     }
                     let _ = request.respond(tiny_http::Response::from_string("OK"));

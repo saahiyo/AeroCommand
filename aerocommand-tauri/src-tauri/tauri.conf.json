@@ -13,12 +13,14 @@
     "windows": [
       {
         "title": "AeroCommand Admin",
-        "width": 800,
-        "height": 600
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1100,
+        "minHeight": 700
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data: https: asset:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.onrender.com http://127.0.0.1:* http://localhost:* ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'"
     }
   },
   "bundle": {
