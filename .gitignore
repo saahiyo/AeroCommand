@@ -40,6 +40,8 @@ $RECYCLE.BIN/
 
 aerocommand.db
 *.db
+*.db-shm
+*.db-wal
 
 .pnpm-store
 # aerocommand-tauri folder should NOT be ignored

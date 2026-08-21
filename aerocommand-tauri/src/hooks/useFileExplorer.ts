@@ -54,6 +54,13 @@ export function useFileExplorer(executeCommand: (cmd: string, silent?: boolean) 
       setFileTotalCount(count);
       setFileError('');
     } catch {
+      // Structured listing that failed to parse (e.g. output cut off mid-JSON) —
+      // never fall through to text parsing, it produces a single garbage row
+      if (output.includes('[JSON_FILES]')) {
+        setFileError('Directory listing was corrupted or truncated in transit — refresh to retry');
+        setFileList([]);
+        return;
+      }
       const lines = output.split('\n');
       const items: FileEntry[] = [];
       lines.forEach(line => {

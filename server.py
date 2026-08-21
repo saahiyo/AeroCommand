@@ -22,6 +22,9 @@ app = Flask(__name__)
 # Reject oversized request bodies before buffering them (Flask answers 413)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
+# Cap stored command output (must exceed client's JSON_FILES payload ~500 items)
+MAX_LOG_OUTPUT = 512 * 1024
+
 # === Operator Authentication ===
 OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "")
 if not OPERATOR_TOKEN:
@@ -121,7 +124,7 @@ def db_log_command(client_id, command, output):
             cursor.execute("""
                 INSERT INTO command_logs (client_id, command, output, timestamp)
                 VALUES (?, ?, ?, ?)
-            """, (client_id, command, output[:10000], now))
+            """, (client_id, command, output[:MAX_LOG_OUTPUT], now))
             conn.commit()
     except Exception as e:
         print(f"[!] DB log_command failed: {e}")
