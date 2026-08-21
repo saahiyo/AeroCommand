@@ -657,7 +657,6 @@ def sse_events():
     return Response(stream(), mimetype="text/event-stream", headers={
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",   # disable proxy buffering (nginx/Render edge)
-        "Connection": "keep-alive",
     })
 
 
