@@ -172,8 +172,8 @@ Before running or compiling `client.py`, update the configuration block in `clie
 ```python
 # client.py configuration
 C2_DOMAIN = "http://127.0.0.1:443/"  # Laboratory server address
-POLLING_DELAY = 5                     # Polling frequency in seconds
-JITTER = 2                            # Random delay range in seconds
+POLLING_DELAY = 1.0                   # Polling frequency in seconds
+JITTER = 0.2                          # Random delay range in seconds
 ANTI_VM = False                       # Set to False for local testing/VMs
 ```
 
@@ -239,7 +239,8 @@ AeroCommand uses HTTP/HTTPS with hybrid RSA-2048 + AES-256-GCM encryption for al
 ### Encryption Implementation
 - **Key Exchange:** Client fetches RSA-2048 public key, generates AES-256 session key, wraps with RSA-OAEP
 - **Data Protection:** All traffic encrypted with AES-256-GCM (nonce + tag + ciphertext, Base64 encoded)
-- **No Fallback:** Decryption failures return `None` — channel cannot degrade to plaintext
+- **No Fallback:** Every endpoint rejects plaintext bodies; decryption failures return `None` — the channel cannot degrade to plaintext
+- **Session Recovery:** If the server restarts and loses session keys, `/cmd` answers `401` (empty body) and the client re-runs the hybrid handshake
 
 ### C2 Endpoints
 

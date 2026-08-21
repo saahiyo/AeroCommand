@@ -1,0 +1,49 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install flask==3.1.3 pycryptodome==3.23.0 waitress==3.0.2
+      - name: Compile check
+        run: python -m py_compile client.py server.py control_panel.py
+      - name: Protocol round-trip tests
+        run: python test_protocol.py
+
+  rust:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: aerocommand-tauri/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo check
+        run: cargo check
+      - name: cargo test (crypto interop + helpers)
+        run: cargo test
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aerocommand-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit

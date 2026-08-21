@@ -33,17 +33,20 @@ export function useC2Polling(opts: UseC2PollingOpts) {
 
   const logsRef = useRef<CommandLog[]>([]);
   const printedIdsRef = useRef<Set<number>>(new Set());
+  const hadErrorRef = useRef(false);
 
   // Cap printedIds to avoid unbounded growth
   const MAX_PRINTED = 1000;
 
   useEffect(() => {
-    const pollInterval = (activeTab === 'files' && isFilesLoading) ? 1000 : 2000;
+    const pollInterval = isFilesLoading ? 300 : 750;
     let cancelled = false;
     const abortControllers: AbortController[] = [];
 
     const fetchData = async () => {
       if (cancelled) return;
+      // Drop refs to last cycle's controllers — they've settled; cleanup only needs the current ones
+      abortControllers.length = 0;
       try {
         let backendClients: Client[] = [];
         let backendLogs: CommandLog[] = [];
@@ -58,16 +61,22 @@ export function useC2Polling(opts: UseC2PollingOpts) {
             if (clientsRes.ok) {
               backendClients = await clientsRes.json();
               setC2ConnectionStatus('connected');
+              hadErrorRef.current = false;
             } else {
               setC2ConnectionStatus('error');
-              let errMsg = `Server error: ${clientsRes.status}`;
-              try { const body = await clientsRes.json(); if (body.error) errMsg = body.error; } catch {}
-              showToast(`Auth failed: ${errMsg}`);
+              // Toast only on the transition into the error state — avoid spamming every poll
+              if (!hadErrorRef.current) {
+                let errMsg = `Server error: ${clientsRes.status}`;
+                try { const body = await clientsRes.json(); if (body.error) errMsg = body.error; } catch {}
+                showToast(`Auth failed: ${errMsg}`);
+              }
+              hadErrorRef.current = true;
             }
           } catch (e: any) {
             if (e?.name !== 'AbortError') {
               setC2ConnectionStatus('error');
-              showToast(`Connection failed: ${e}`);
+              if (!hadErrorRef.current) showToast(`Connection failed: ${e}`);
+              hadErrorRef.current = true;
             }
           }
           try {

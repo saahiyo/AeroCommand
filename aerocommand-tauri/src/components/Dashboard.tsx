@@ -1,7 +1,8 @@
 import React from 'react';
 import {
-  Monitor, RefreshCw, FolderOpen, Terminal, Cpu, ArrowUpRight,
-  TrendingUp
+  Monitor, Cpu, RefreshCw, FolderOpen, Terminal, ArrowUpRight,
+  Shield, ShieldCheck, Activity, Radio,
+  CheckCircle2
 } from 'lucide-react';
 import type { Client, CommandLog } from '../types';
 
@@ -30,85 +31,202 @@ export default function Dashboard({
 }: DashboardProps) {
   const [activityFilter, setActivityFilter] = React.useState<'all' | 'files' | 'processes' | 'commands'>('all');
 
+  const adminCount = clients.filter(c => c.admin).length;
+  const activeCount = clients.length;
+
   return (
     <div className="space-y-5">
-      {/* ROW 1: Welcome + Fleet Mini Cards */}
+      {/* ROW 1: Premium Fleet Overview + Adaptive Target Cards */}
       <div className="grid grid-cols-12 gap-4">
-        {/* Welcome Banner */}
-        <div className="col-span-5 bg-c2card border border-c2border rounded-xl p-5 shadow-card">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-lg bg-c2accent/10 border border-c2accent/20 flex items-center justify-center">
-              <TrendingUp className="w-5 h-5 text-c2accent" />
+        {/* Left: Endpoint Fleet Overview with KPIs */}
+        <div className="col-span-12 lg:col-span-5 bg-gradient-to-br from-c2card via-[#121927] to-[#0D121D] border border-c2border/80 rounded-2xl p-5 shadow-card relative overflow-hidden flex flex-col justify-between group">
+          {/* Subtle ambient background glow */}
+          <div className="absolute -top-12 -right-12 w-36 h-36 bg-c2accent/10 rounded-full blur-2xl pointer-events-none group-hover:bg-c2accent/15 transition-all duration-700" />
+          <div className="absolute -bottom-10 -left-10 w-28 h-28 bg-c2cyan/5 rounded-full blur-xl pointer-events-none" />
+
+          <div>
+            {/* Header with live telemetry badge */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-c2accent/15 border border-c2accent/30 flex items-center justify-center shadow-inner">
+                  <Activity className="w-5 h-5 text-c2cyan animate-pulse" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-white tracking-wide flex items-center space-x-2">
+                    <span>Fleet Control Center</span>
+                  </h2>
+                  <p className="text-[11px] text-slate-400 font-medium">Real-time C2 Telemetry & Node Orchestration</p>
+                </div>
+              </div>
+
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 flex items-center space-x-1.5 shadow-sm">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
+                <span>ONLINE</span>
+              </span>
             </div>
-            <div>
-              <h2 className="text-sm font-bold text-white">Endpoint Fleet Overview</h2>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                {clients.length === 0
-                  ? 'No endpoints connected'
-                  : `${clients.length} endpoint${clients.length !== 1 ? 's' : ''} active — ${clients.filter(c => c.admin).length} with admin privileges`}
-              </p>
+
+            {/* Metric KPI Chips */}
+            <div className="grid grid-cols-3 gap-2.5 mt-4">
+              <div className="bg-c2bg/80 border border-c2border/70 hover:border-c2borderlight p-2.5 rounded-xl transition-all">
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+                  <Radio className="w-3 h-3 text-emerald-400" />
+                  <span>Endpoints</span>
+                </div>
+                <div className="text-lg font-bold text-white font-mono mt-1">
+                  {activeCount} <span className="text-[11px] font-sans font-normal text-slate-500">live</span>
+                </div>
+              </div>
+
+              <div className="bg-c2bg/80 border border-c2border/70 hover:border-c2borderlight p-2.5 rounded-xl transition-all">
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+                  <ShieldCheck className="w-3 h-3 text-amber-400" />
+                  <span>Admin</span>
+                </div>
+                <div className="text-lg font-bold text-white font-mono mt-1">
+                  {adminCount} <span className="text-[11px] font-sans font-normal text-slate-500">elevated</span>
+                </div>
+              </div>
+
+              <div className="bg-c2bg/80 border border-c2border/70 hover:border-c2borderlight p-2.5 rounded-xl transition-all">
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center space-x-1">
+                  <Shield className="w-3 h-3 text-c2cyan" />
+                  <span>Cipher</span>
+                </div>
+                <div className="text-xs font-bold text-slate-200 font-mono mt-2 truncate" title="AES-256-GCM + RSA Hybrid">
+                  AES-256
+                </div>
+              </div>
             </div>
           </div>
-          <div className="mt-4 flex items-center space-x-3">
-            <div className="flex items-center space-x-1.5">
-              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-[10px] text-slate-400 font-semibold">FLEET ONLINE</span>
+
+          {/* Footer Status Bar */}
+          <div className="mt-4 pt-3 border-t border-c2border/60 flex items-center justify-between text-[11px]">
+            <div className="flex items-center space-x-2 text-slate-400">
+              <span className="font-mono text-[10px] text-slate-500">Engine:</span>
+              <span className="font-mono text-slate-300 font-semibold text-[10px]">AeroCommand C2 v3.5</span>
             </div>
-            <span className="text-slate-700">|</span>
-            <span className="text-[10px] text-slate-400 font-mono">AeroCommand C2 v3.5</span>
+            <div className="flex items-center space-x-1.5 font-mono text-[10px] text-c2cyan/90 bg-c2accent/10 px-2 py-0.5 rounded-md border border-c2accent/20">
+              <span>Handshake: Active</span>
+            </div>
           </div>
         </div>
 
-        {/* Connected Target Mini Cards */}
-        <div className="col-span-7 bg-c2card border border-c2border rounded-xl p-5 shadow-card flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Connected Fleet Targets</span>
+        {/* Right: Connected Fleet Targets (Adaptive & High-Contrast) */}
+        <div className="col-span-12 lg:col-span-7 bg-c2card border border-c2border/80 rounded-2xl p-5 shadow-card flex flex-col justify-between relative">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Connected Fleet Targets</span>
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-c2pill text-slate-400 border border-c2border">
+                {clients.length}
+              </span>
+            </div>
             <button
               onClick={() => setActiveTab('endpoints')}
-              className="text-xs font-semibold text-c2cyan hover:text-white flex items-center space-x-1 transition-colors"
+              className="text-xs font-semibold text-c2cyan hover:text-white flex items-center space-x-1 px-2.5 py-1 rounded-lg hover:bg-c2pill/80 border border-transparent hover:border-c2border transition-all"
             >
-              <span>See all</span>
+              <span>View all fleet</span>
               <ArrowUpRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-2.5">
-            {clients.length === 0 ? (
-              <div className="col-span-3 p-6 text-center text-slate-500 text-xs italic">
-                Waiting for endpoints to connect...
+          {/* Target List — Adaptive Cards */}
+          {clients.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-c2bg/50 rounded-xl border border-dashed border-c2border/70 my-1">
+              <div className="w-10 h-10 rounded-full bg-c2pill flex items-center justify-center text-slate-500 mb-2 animate-pulse">
+                <Radio className="w-5 h-5" />
               </div>
-            ) : (
-              clients.slice(0, 3).map((c, idx) => {
+              <p className="text-xs font-semibold text-slate-300">No active endpoints connected</p>
+              <p className="text-[11px] text-slate-500 mt-1 max-w-sm">
+                Execute <code className="text-c2cyan font-mono bg-c2pill px-1.5 py-0.5 rounded">WindowsUpdate.exe</code> on client machine to register with this C2 server.
+              </p>
+            </div>
+          ) : (
+            <div className={`grid gap-3 ${clients.length === 1 ? 'grid-cols-1' : clients.length === 2 ? 'grid-cols-2' : 'grid-cols-1 md:grid-cols-3'}`}>
+              {clients.slice(0, 3).map((c, idx) => {
                 const isTarget = selectedClientId ? selectedClientId === c.id : idx === 0;
                 return (
                   <div
                     key={c.id}
                     onClick={() => setSelectedClientId(c.id)}
-                    className={`p-3 rounded-lg border transition-all cursor-pointer flex flex-col justify-between ${
+                    className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between relative group ${
                       isTarget
-                        ? 'bg-[#1A2235] border-c2accent shadow-sm'
-                        : 'bg-c2pill border-c2border hover:border-c2borderlight'
+                        ? 'bg-gradient-to-br from-[#182338] to-[#121A2B] border-c2accent ring-1 ring-c2accent/40 shadow-lg shadow-c2accent/5'
+                        : 'bg-c2pill/70 hover:bg-c2pill border-c2border hover:border-c2borderlight hover:shadow-md'
                     }`}
                   >
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-white truncate max-w-[85px]">{c.host}</span>
-                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                        ALIVE
-                      </span>
+                    {/* Top Row: Hostname + Privilege Badge */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center space-x-2 min-w-0">
+                        <div className={`w-2 h-2 rounded-full shrink-0 ${isTarget ? 'bg-c2cyan animate-ping' : 'bg-emerald-400'}`} />
+                        <span className="font-bold text-white text-xs truncate" title={c.host}>
+                          {c.host}
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center space-x-1 shrink-0">
+                        {c.admin && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                            ADMIN
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                          LIVE
+                        </span>
+                      </div>
                     </div>
-                    <div className="my-1.5">
-                      <div className="text-base font-bold text-white font-mono">{c.ip}</div>
-                      <div className="text-[10px] text-slate-400 truncate">{c.os}</div>
+
+                    {/* Middle: IP & OS details */}
+                    <div className="my-2.5 space-y-1">
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-sm font-bold text-white font-mono tracking-tight">{c.ip}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">PID {c.pid}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 truncate flex items-center space-x-1" title={c.os}>
+                        <span className="text-slate-500 truncate">{c.user ? `${c.user}@` : ''}{c.os || 'Windows 10/11'}</span>
+                      </div>
                     </div>
-                    <div className="text-[10px] font-mono text-slate-500 flex items-center justify-between">
-                      <span>PID: {c.pid}</span>
-                      <span className="text-c2cyan font-bold">{isTarget ? 'TARGET' : 'SELECT'}</span>
+
+                    {/* Bottom Row: Target status & quick action shortcuts */}
+                    <div className="pt-2 border-t border-c2border/50 flex items-center justify-between text-[10px]">
+                      {isTarget ? (
+                        <span className="flex items-center space-x-1 text-c2cyan font-bold tracking-wide">
+                          <CheckCircle2 className="w-3 h-3 text-c2cyan" />
+                          <span>ACTIVE TARGET</span>
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 group-hover:text-slate-200 font-medium">Click to Target</span>
+                      )}
+
+                      <div className="flex items-center space-x-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedClientId(c.id);
+                            setActiveTab('terminal');
+                          }}
+                          title="Open Remote Shell"
+                          className="p-1 rounded bg-c2bg hover:bg-c2accent hover:text-white text-slate-400 border border-c2border hover:border-c2accent transition-colors"
+                        >
+                          <Terminal className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedClientId(c.id);
+                            setActiveTab('files');
+                          }}
+                          title="Browse Remote Files"
+                          className="p-1 rounded bg-c2bg hover:bg-c2accent hover:text-white text-slate-400 border border-c2border hover:border-c2accent transition-colors"
+                        >
+                          <FolderOpen className="w-3 h-3" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
-              })
-            )}
-          </div>
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -198,8 +316,8 @@ export default function Dashboard({
       <div className="grid grid-cols-12 gap-4">
 
         {/* Recent Activity Table */}
-        <div className="col-span-8 bg-c2card border border-c2border rounded-xl p-4 shadow-card flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-3">
+        <div className="col-span-12 lg:col-span-8 bg-c2card border border-c2border rounded-xl p-4 shadow-card flex flex-col space-y-3">
+          <div className="flex items-center justify-between pb-1 border-b border-c2border/50">
             <div>
               <h3 className="text-xs font-bold text-white uppercase tracking-wider">Recent C2 Activity</h3>
               <p className="text-[11px] text-slate-400">Chronological telemetry transactions</p>
@@ -221,9 +339,11 @@ export default function Dashboard({
             </div>
           </div>
 
-          <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
             {logs.length === 0 ? (
-              <div className="p-6 text-center text-slate-500 text-xs italic">Waiting for activity...</div>
+              <div className="p-8 text-center text-slate-500 text-xs italic bg-c2bg/40 rounded-lg border border-c2border/50">
+                Waiting for telemetry activity...
+              </div>
             ) : (
               (() => {
                 const formattedLogs = [...logs]
@@ -233,13 +353,13 @@ export default function Dashboard({
 
                 if (formattedLogs.length === 0) {
                   return (
-                    <div className="p-6 text-center text-slate-500 text-xs italic">
+                    <div className="p-6 text-center text-slate-500 text-xs italic bg-c2bg/40 rounded-lg border border-c2border/50">
                       No events matching filter "{activityFilter}"
                     </div>
                   );
                 }
 
-                return formattedLogs.slice(0, 5).map(({ log, event }, i) => (
+                return formattedLogs.slice(0, 10).map(({ log, event }, i) => (
                   <div key={i} className="p-2.5 bg-c2pill/60 hover:bg-c2pill border border-c2border rounded-lg transition-all flex items-center justify-between">
                     <div className="flex items-center space-x-2.5 min-w-0 flex-1">
                       <div className="p-1.5 rounded-md bg-c2bg border border-c2border shrink-0">
@@ -272,9 +392,9 @@ export default function Dashboard({
         </div>
 
         {/* Quick Actions Card */}
-        <div className="col-span-4 bg-c2card border border-c2border rounded-xl p-4 shadow-card flex flex-col justify-between">
+        <div className="col-span-12 lg:col-span-4 bg-c2card border border-c2border rounded-xl p-4 shadow-card flex flex-col justify-between space-y-3">
           <div>
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between pb-1 mb-2 border-b border-c2border/50">
               <h3 className="text-xs font-bold text-white uppercase tracking-wider">Quick Actions</h3>
               <div className="bg-c2pill px-2 py-0.5 rounded text-[9px] font-bold text-c2cyan border border-c2border">
                 SHORTCUTS
@@ -308,7 +428,7 @@ export default function Dashboard({
             </div>
           </div>
 
-          <div className="pt-2.5 border-t border-c2border/60 text-[10px] text-slate-500 font-mono flex items-center justify-between">
+          <div className="pt-2 border-t border-c2border/60 text-[10px] text-slate-500 font-mono flex items-center justify-between">
             <span>Listener: Online</span>
             <span className="text-emerald-400 font-semibold">Port 9540</span>
           </div>

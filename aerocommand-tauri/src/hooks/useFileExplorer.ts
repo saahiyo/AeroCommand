@@ -18,12 +18,36 @@ export function useFileExplorer(executeCommand: (cmd: string, silent?: boolean) 
   const browsingIndicatorRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirCacheRef = useRef<Map<string, { items: FileEntry[], truncated: boolean, count: number }>>(new Map());
 
+  const setCache = useCallback((path: string, items: FileEntry[], truncated: boolean, count: number) => {
+    const key = normPath(path);
+    if (dirCacheRef.current.size >= MAX_CACHE) {
+      const firstKey = dirCacheRef.current.keys().next().value;
+      if (firstKey) dirCacheRef.current.delete(firstKey);
+    }
+    dirCacheRef.current.set(key, { items, truncated, count });
+  }, []);
+
   const parseFileList = useCallback((output: string) => {
+    setIsFilesLoading(false);
+    if (browsingIndicatorRef.current) clearTimeout(browsingIndicatorRef.current);
+
+    if (output.startsWith('[-]')) {
+      setFileError(output.replace('[-]', '').trim());
+      setFileList([]);
+      return;
+    }
+
     try {
       const data = JSON.parse(output.replace('[JSON_FILES]', ''));
-      const items: FileEntry[] = data.files || [];
+      const items: FileEntry[] = data.items || data.files || [];
       const truncated = data.truncated || false;
       const count = data.count || items.length || 0;
+
+      if (data.path) {
+        const resolvedPath = normPath(data.path);
+        setCurrentPath(resolvedPath);
+        setCache(resolvedPath, items, truncated, count);
+      }
 
       setFileList(items);
       setFileTruncated(truncated);
@@ -48,24 +72,31 @@ export function useFileExplorer(executeCommand: (cmd: string, silent?: boolean) 
       setFileList(items);
       setFileError('');
     }
-  }, [currentPath]);
-
-  const setCache = useCallback((path: string, items: FileEntry[], truncated: boolean, count: number) => {
-    const key = normPath(path);
-    if (dirCacheRef.current.size >= MAX_CACHE) {
-      const firstKey = dirCacheRef.current.keys().next().value;
-      if (firstKey) dirCacheRef.current.delete(firstKey);
-    }
-    dirCacheRef.current.set(key, { items, truncated, count });
-  }, []);
+  }, [setCache]);
 
   // parseFileList that also caches under given path
   const parseAndCache = useCallback((output: string, pathForCache: string) => {
+    setIsFilesLoading(false);
+    if (browsingIndicatorRef.current) clearTimeout(browsingIndicatorRef.current);
+
+    if (output.startsWith('[-]')) {
+      setFileError(output.replace('[-]', '').trim());
+      setFileList([]);
+      return;
+    }
+
     try {
       const data = JSON.parse(output.replace('[JSON_FILES]', ''));
-      const items: FileEntry[] = data.files || [];
+      const items: FileEntry[] = data.items || data.files || [];
       const truncated = !!data.truncated;
       const count = data.count || items.length || 0;
+      
+      if (data.path) {
+        const resolvedPath = normPath(data.path);
+        setCurrentPath(resolvedPath);
+        setCache(resolvedPath, items, truncated, count);
+      }
+      
       setFileList(items);
       setFileTruncated(truncated);
       setFileTotalCount(count);
@@ -106,13 +137,14 @@ export function useFileExplorer(executeCommand: (cmd: string, silent?: boolean) 
     }
 
     setIsFilesLoading(true);
+    setFileList([]);
     setFileError('');
-    if (currentPath && normalized !== currentPath) {
+    if (currentPath && normalized !== currentPath && !navHistoryRef.current.includes(currentPath)) {
       navHistoryRef.current.push(currentPath);
     }
     setCurrentPath(normalized);
     executeCommand(`ls "${path}"`, true);
-    browsingIndicatorRef.current = setTimeout(() => setIsFilesLoading(false), 3000);
+    browsingIndicatorRef.current = setTimeout(() => setIsFilesLoading(false), 5000);
   }, [currentPath, executeCommand]);
 
   const goBack = useCallback(() => {
