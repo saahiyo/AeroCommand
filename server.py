@@ -14,6 +14,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Force UTF-8 console output — cp1252 terminals crash on ✓/emoji prints (500s on /register)
+for _stream in (sys.stdout, sys.stderr):
+    if _stream and hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
 # Suppress Flask logging
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)

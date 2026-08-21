@@ -929,6 +929,11 @@ def browse_files(path=""):
     try:
         clean_path = path.strip().strip('"').strip("'") if path else ""
 
+        # Strip leading option flags (e.g. "ls -a .") — no flags are supported
+        while clean_path.startswith('-'):
+            parts = clean_path.split(None, 1)
+            clean_path = parts[1].strip() if len(parts) > 1 else ""
+
         # Special case: Resolve well-known folders dynamically
         if clean_path.startswith("SPECIAL:"):
             raw = clean_path.split(":", 1)[1]
@@ -939,6 +944,11 @@ def browse_files(path=""):
                 clean_path = os.path.join(base_folder, parts[1].replace("/", os.sep))
             else:
                 clean_path = base_folder
+
+        # Bare drive letter ("C:") is drive-relative on Windows and resolves to the
+        # client's cwd on that drive — force it to the drive root instead
+        if len(clean_path) == 2 and clean_path[1] == ':':
+            clean_path += os.sep
 
         upper_path = clean_path.upper()
 

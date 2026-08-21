@@ -36,6 +36,8 @@ type SortOrder = 'asc' | 'desc';
 type FileFilterType = 'all' | 'folders' | 'images' | 'documents' | 'code' | 'executables' | 'archives';
 
 function formatFileSize(sizeStr: string): string {
+  // Client already sends human-readable sizes ("12.3 KB", "DIR", "???") — pass through
+  if (!/^\d+$/.test(sizeStr.trim())) return sizeStr;
   try {
     const bytes = parseInt(sizeStr, 10);
     if (isNaN(bytes) || bytes === 0) return '0 B';
@@ -48,9 +50,14 @@ function formatFileSize(sizeStr: string): string {
   }
 }
 
+const SIZE_UNITS: Record<string, number> = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 };
+
 function parseBytes(sizeStr: string): number {
+  // Handles both raw byte counts and formatted strings like "1.5 KB" / "DIR" / "???"
+  const m = sizeStr.trim().match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i);
+  if (m) return parseFloat(m[1]) * (SIZE_UNITS[m[2].toUpperCase()] || 1);
   const bytes = parseInt(sizeStr, 10);
-  return isNaN(bytes) ? 0 : bytes;
+  return isNaN(bytes) ? -1 : bytes; // unknown markers sort last
 }
 
 function getFileCategory(name: string, isDir: boolean): FileFilterType {
@@ -398,7 +405,13 @@ export default function FileExplorer({
               <span>System Drives</span>
             </button>
             <button
-              onClick={() => browseFolder(currentPath === 'System Drives' ? '.' : (currentPath || '.'), true)}
+              onClick={() => {
+                if (!currentPath || currentPath === 'System Drives') {
+                  listDrives();
+                } else {
+                  browseFolder(currentPath, true);
+                }
+              }}
               className="px-3 py-1.5 bg-c2accent hover:bg-c2accenthover text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-colors shadow-sm shadow-c2accent/20"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isFilesLoading ? 'animate-spin' : ''}`} />
@@ -579,7 +592,16 @@ export default function FileExplorer({
                       </div>
                       <div className="space-y-0.5">
                         {group.items.map((item) => {
-                          const isActive = currentPath === item.path;
+                          // SPECIAL:* paths resolve to real Windows paths server-side,
+                          // so also match on the resolved folder name for highlighting
+                          const specialSegment = item.path.startsWith('SPECIAL:')
+                            ? item.path.split(':')[1].split('/')[0].toLowerCase()
+                            : null;
+                          const isActive = currentPath === item.path ||
+                            (specialSegment !== null && (
+                              currentPath.toLowerCase().endsWith(`/${specialSegment}`) ||
+                              currentPath.toLowerCase().endsWith(`\\${specialSegment}`)
+                            ));
                           return (
                             <button
                               key={item.label}

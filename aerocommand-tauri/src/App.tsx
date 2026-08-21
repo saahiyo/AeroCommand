@@ -158,6 +158,7 @@ function AppInner() {
   useC2Polling({
     activeTab,
     isFilesLoading,
+    selectedClientId,
     c2Mode,
     c2ServerUrl,
     authHeader,

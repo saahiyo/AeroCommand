@@ -5,6 +5,7 @@ import type { Client, CommandLog, LootFile, PreviewData } from '../types';
 interface UseC2PollingOpts {
   activeTab: string;
   isFilesLoading: boolean;
+  selectedClientId: string;
   c2Mode: 'cloud' | 'local';
   c2ServerUrl: string;
   authHeader: Record<string, string>;
@@ -23,7 +24,7 @@ interface UseC2PollingOpts {
 
 export function useC2Polling(opts: UseC2PollingOpts) {
   const {
-    activeTab, isFilesLoading, c2Mode, c2ServerUrl, authHeader,
+    activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader,
     setClients, setLogs, setLootFiles,
     setProcessList, setIsProcessesLoading,
     setPreviewOpen, setPreviewData,
@@ -101,10 +102,16 @@ export function useC2Polling(opts: UseC2PollingOpts) {
         logsRef.current = backendLogs;
 
         const newTermLines: string[] = [];
-        backendLogs.forEach((log) => {
+        // Server returns logs newest-first; process chronologically so older
+        // stragglers can never overwrite newer responses in the UI
+        [...backendLogs].reverse().forEach((log) => {
           if (printedIdsRef.current.has(log.id)) return;
+          // Only accept structured output from the currently targeted client —
+          // another machine's ls/ps/preview must never hijack this operator's view
+          const fromTarget = !selectedClientId || log.client_id === selectedClientId;
           if (log.output.includes('[JSON_PREVIEW]')) {
             printedIdsRef.current.add(log.id);
+            if (!fromTarget) return;
             try {
               const jsonStr = log.output.replace('[JSON_PREVIEW]', '');
               const parsed = JSON.parse(jsonStr);
@@ -115,6 +122,7 @@ export function useC2Polling(opts: UseC2PollingOpts) {
             } catch {}
           } else if (log.output.includes('[JSON_PROCS]')) {
             printedIdsRef.current.add(log.id);
+            if (!fromTarget) return;
             try {
               const jsonStr = log.output.replace('[JSON_PROCS]', '');
               const procs = JSON.parse(jsonStr);
@@ -122,12 +130,10 @@ export function useC2Polling(opts: UseC2PollingOpts) {
               setIsProcessesLoading(false);
             } catch {}
           } else if (log.output.includes('[JSON_FILES]')) {
-            // mark as printed to avoid re-trigger? parseFileList handles cache update
-            if (!printedIdsRef.current.has(log.id)) {
-              printedIdsRef.current.add(log.id);
-              parseFileList(log.output);
-            }
-          } else if (log.status === 'SUCCESS' && log.output && !log.output.startsWith('Queued') && !printedIdsRef.current.has(log.id)) {
+            printedIdsRef.current.add(log.id);
+            if (!fromTarget) return;
+            parseFileList(log.output);
+          } else if (log.status === 'SUCCESS' && log.output && !log.output.startsWith('Queued')) {
             printedIdsRef.current.add(log.id);
             const cmdLabel = log.command || 'Command';
             newTermLines.push(`\n[${cmdLabel}] ${log.client_id}`, log.output);
@@ -150,5 +156,5 @@ export function useC2Polling(opts: UseC2PollingOpts) {
       clearInterval(interval);
       abortControllers.forEach(ac => ac.abort());
     };
-  }, [activeTab, isFilesLoading, c2Mode, c2ServerUrl, authHeader, setC2ConnectionStatus, showToast, parseFileList, appendTermLog, setClients, setLogs, setLootFiles, setProcessList, setIsProcessesLoading, setPreviewOpen, setPreviewData]);
+  }, [activeTab, isFilesLoading, selectedClientId, c2Mode, c2ServerUrl, authHeader, setC2ConnectionStatus, showToast, parseFileList, appendTermLog, setClients, setLogs, setLootFiles, setProcessList, setIsProcessesLoading, setPreviewOpen, setPreviewData]);
 }
