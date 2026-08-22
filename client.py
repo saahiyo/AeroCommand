@@ -656,6 +656,15 @@ _gdi32.DeleteObject.restype = ctypes.c_bool
 _gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
 _gdi32.DeleteDC.restype = ctypes.c_bool
 
+# Icon extraction helpers (SHGetFileInfo / DrawIconEx)
+_shell32 = ctypes.windll.shell32
+_user32.DrawIconEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+_user32.DrawIconEx.restype = ctypes.c_bool
+_user32.DestroyIcon.argtypes = [ctypes.c_void_p]
+_user32.DestroyIcon.restype = ctypes.c_bool
+_shell32.SHGetFileInfoW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32]
+_shell32.SHGetFileInfoW.restype = ctypes.c_uint32
+
 
 class _BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
@@ -1448,31 +1457,127 @@ def _get_installed_apps():
     return result
 
 
-def _collect_app_icons(apps, max_total_bytes=400 * 1024, max_per_icon=100 * 1024):
-    """Extract small standalone icon files (.ico/.png/.bmp) as data URIs.
-    EXE-embedded icons can't be extracted without PE parsing — those fall back
-    to frontend letter tiles."""
+class _SHFILEINFOW(ctypes.Structure):
+    _fields_ = [
+        ("hIcon", ctypes.c_void_p),
+        ("iIcon", ctypes.c_int),
+        ("dwAttributes", ctypes.c_uint32),
+        ("szDisplayName", ctypes.c_wchar * 260),
+        ("szTypeName", ctypes.c_wchar * 80),
+    ]
+
+_SHGFI_ICON = 0x000000100
+_SHGFI_SMALLICON = 0x000000001
+_SHGFI_LARGEICON = 0x000000000
+_DI_NORMAL = 0x0003
+
+def _hicon_to_png_b64(hicon, size=32):
+    """Render HICON into a 32x32 PNG bytes (BGRA->PNG via _create_png_from_bgra)"""
+    try:
+        hdc_screen = _user32.GetDC(None)
+        if not hdc_screen:
+            return None
+        hdc_mem = _gdi32.CreateCompatibleDC(hdc_screen)
+        hbmp = _gdi32.CreateCompatibleBitmap(hdc_screen, size, size)
+        if not hbmp or not hdc_mem:
+            if hdc_mem:
+                _gdi32.DeleteDC(hdc_mem)
+            _user32.ReleaseDC(None, hdc_screen)
+            return None
+        old = _gdi32.SelectObject(hdc_mem, hbmp)
+        # Transparent fill (optional) — black background is overwritten by DrawIconEx
+        try:
+            ok = _user32.DrawIconEx(hdc_mem, 0, 0, hicon, size, size, 0, None, _DI_NORMAL)
+        except Exception:
+            ok = False
+        if not ok:
+            _gdi32.SelectObject(hdc_mem, old)
+            _gdi32.DeleteObject(hbmp)
+            _gdi32.DeleteDC(hdc_mem)
+            _user32.ReleaseDC(None, hdc_screen)
+            return None
+        _gdi32.SelectObject(hdc_mem, old)
+        bmi = _BITMAPINFOHEADER()
+        bmi.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.biWidth = size
+        bmi.biHeight = -size
+        bmi.biPlanes = 1
+        bmi.biBitCount = 32
+        bmi.biCompression = 0
+        buf = ctypes.create_string_buffer(size * size * 4)
+        got = _gdi32.GetDIBits(hdc_mem, hbmp, 0, size, buf, ctypes.byref(bmi), 0)
+        _gdi32.DeleteObject(hbmp)
+        _gdi32.DeleteDC(hdc_mem)
+        _user32.ReleaseDC(None, hdc_screen)
+        if not got:
+            return None
+        png = _create_png_from_bgra(size, size, buf.raw, size * 4)
+        return base64.b64encode(png).decode('utf-8')
+    except Exception:
+        return None
+
+def _extract_icon_from_path(icon_path, size=32):
+    """Try SHGetFileInfo -> HICON -> PNG b64. Works for .exe/.dll/.ico etc."""
+    try:
+        if not icon_path or not os.path.isfile(icon_path):
+            return None
+        sfi = _SHFILEINFOW()
+        # Large icon (48/32) gives better quality after downscale to 32
+        ret = _shell32.SHGetFileInfoW(icon_path, 0, ctypes.byref(sfi), ctypes.sizeof(sfi), _SHGFI_ICON | _SHGFI_LARGEICON)
+        if not ret or not sfi.hIcon:
+            return None
+        b64 = _hicon_to_png_b64(sfi.hIcon, size=size)
+        try:
+            _user32.DestroyIcon(sfi.hIcon)
+        except Exception:
+            pass
+        if not b64:
+            return None
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        return None
+
+def _collect_app_icons(apps, max_total_bytes=650 * 1024, max_per_icon=120 * 1024):
+    """Extract icons as data URIs.
+    - Standalone .ico/.png/.bmp: raw read
+    - .exe/.dll (most apps): SHGetFileInfo -> HICON -> PNG render
+    Falls back to letter tile if both fail."""
     icons = {}
     total = 0
     for app in apps:
-        loc = app.get("icon_path", "")
+        loc = (app.get("icon_path", "") or "").split(",")[0].strip().strip('"').strip("'")
         if not loc or not os.path.isfile(loc):
             continue
         ext = os.path.splitext(loc)[1].lower()
-        if ext not in ('.ico', '.png', '.bmp'):
-            continue
+        data_uri = None
         try:
-            if os.path.getsize(loc) > max_per_icon:
-                continue
-            with open(loc, "rb") as f:
-                raw = f.read()
-            if total + len(raw) > max_total_bytes:
-                break
-            mime = {'.ico': 'image/x-icon', '.png': 'image/png', '.bmp': 'image/bmp'}[ext]
-            icons[app["name"]] = f"data:{mime};base64,{base64.b64encode(raw).decode('utf-8')}"
-            total += len(raw)
+            if ext in ('.ico', '.png', '.bmp'):
+                if os.path.getsize(loc) > max_per_icon:
+                    continue
+                with open(loc, "rb") as f:
+                    raw = f.read()
+                if total + len(raw) > max_total_bytes:
+                    break
+                mime = {'.ico': 'image/x-icon', '.png': 'image/png', '.bmp': 'image/bmp'}[ext]
+                data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode('utf-8')}"
+                total += len(raw)
+            else:
+                # Generic path (usually .exe/.dll) — render HICON
+                uri = _extract_icon_from_path(loc, size=32)
+                if not uri:
+                    continue
+                # Rough size estimate for budget (b64 ~ 4/3)
+                est = len(uri) * 3 // 4
+                if est > max_per_icon or total + est > max_total_bytes:
+                    continue
+                data_uri = uri
+                total += est
         except (OSError, PermissionError):
             continue
+        if data_uri:
+            icons[app["name"]] = data_uri
+            if total >= max_total_bytes:
+                break
     return icons
 
 

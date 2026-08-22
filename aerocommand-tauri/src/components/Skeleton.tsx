@@ -3,15 +3,24 @@ export function Skeleton({ className = '' }: { className?: string }) {
 }
 
 export function TableSkeleton({ rows = 6, cols = 5 }: { rows?: number; cols?: number }) {
+  // Mirrors actual table header + row layout — full-width, not left-clumped
+  const colWidths = ['w-[28%]', 'w-[10%]', 'w-[14%]', 'w-[14%]', 'w-[22%]', 'w-[12%]'];
   return (
-    <div className="space-y-2 p-3">
-      {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex gap-2">
-          {Array.from({ length: cols }).map((__, j) => (
-            <Skeleton key={j} className={`h-4 ${j === 0 ? 'w-1/3' : j === 1 ? 'w-16' : 'w-20'}`} />
-          ))}
-        </div>
-      ))}
+    <div className="w-full">
+      <div className="flex gap-2 px-3 py-3 border-b border-c2border bg-slate-900/30">
+        {Array.from({ length: cols }).map((_, j) => (
+          <Skeleton key={j} className={`h-3 rounded ${colWidths[j % colWidths.length]} opacity-60`} />
+        ))}
+      </div>
+      <div className="divide-y divide-c2border/30">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex items-center gap-2 px-3 py-3" style={{ opacity: 0.9 - i * 0.07 }}>
+            {Array.from({ length: cols }).map((__, j) => (
+              <Skeleton key={j} className={`h-3.5 rounded ${colWidths[j % colWidths.length]} ${j === 0 ? 'h-4' : ''}`} />
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
