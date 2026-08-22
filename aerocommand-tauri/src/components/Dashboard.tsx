@@ -11,7 +11,7 @@ interface DashboardProps {
   logs: CommandLog[];
   selectedClientId: string;
   setSelectedClientId: (id: string) => void;
-  setActiveTab: (tab: 'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'apps' | 'clipboard' | 'database' | 'settings') => void;
+  setActiveTab: (tab: 'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'apps' | 'keylogger' | 'clipboard' | 'database' | 'settings') => void;
   formatActivityLog: (log: CommandLog) => {
     category: string;
     badge: string;

