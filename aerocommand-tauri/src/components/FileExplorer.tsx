@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { Suspense, useState, useMemo, useRef, useEffect } from 'react';
 import {
   FolderOpen, Folder, HardDrive, RefreshCw, Monitor, Database as DatabaseIcon,
   ShieldCheck, Eye, Download, Search, Grid, List, ArrowUp, ArrowDown,
@@ -6,6 +6,7 @@ import {
   Image as ImageIcon, Archive, Clock, X, AlertCircle
 } from 'lucide-react';
 import Tooltip from './Tooltip';
+import { ListSkeleton, GridSkeleton } from './Skeleton';
 import type { FileEntry, LootFile } from '../types';
 
 interface FileExplorerProps {
@@ -659,17 +660,12 @@ export default function FileExplorer({
                 )}
 
                 {/* File List / Grid Content */}
-                <div className="flex-1 overflow-y-auto">
-                  {fileList.length === 0 && !fileError ? (
-                    <div className="h-full flex flex-col items-center justify-center p-12 text-center text-slate-500 space-y-3">
-                      {isFilesLoading ? (
-                        <div className="flex flex-col items-center space-y-3">
-                          <div className="w-10 h-10 rounded-xl bg-c2accent/10 border border-c2accent/20 flex items-center justify-center">
-                            <RefreshCw className="w-5 h-5 animate-spin text-c2cyan" />
-                          </div>
-                          <span className="text-xs font-bold uppercase tracking-wider text-slate-300">Retrieving remote directory...</span>
-                        </div>
-                      ) : (
+                <Suspense fallback={viewMode === 'grid' ? <GridSkeleton cards={12} /> : <ListSkeleton rows={8} />}>
+                  <div className="flex-1 overflow-y-auto">
+                    {isFilesLoading ? (
+                      viewMode === 'grid' ? <GridSkeleton cards={12} /> : <ListSkeleton rows={8} />
+                    ) : fileList.length === 0 && !fileError ? (
+                      <div className="h-full flex flex-col items-center justify-center p-12 text-center text-slate-500 space-y-3">
                         <div className="flex flex-col items-center space-y-2">
                           <div className="w-12 h-12 rounded-2xl bg-c2pill flex items-center justify-center text-slate-600 border border-c2border">
                             <FolderOpen className="w-6 h-6 opacity-30" />
@@ -677,8 +673,7 @@ export default function FileExplorer({
                           <span className="text-xs font-semibold text-slate-400">Directory is empty</span>
                           <span className="text-[11px] text-slate-600">Select a folder or quick access location to browse</span>
                         </div>
-                      )}
-                    </div>
+                      </div>
                   ) : filteredAndSortedFiles.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center p-12 text-center text-slate-500 space-y-2">
                       <Search className="w-8 h-8 opacity-20" />
@@ -947,10 +942,11 @@ export default function FileExplorer({
                         );
                       })}
                     </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                </Suspense>
 
-                {/* Footer Status Bar */}
+                  {/* Footer Status Bar */}
                 <div className="px-4 py-2 border-t border-c2border bg-c2pill/60 text-[11px] text-slate-400 flex items-center justify-between shrink-0 font-mono">
                   <div className="flex items-center space-x-3">
                     <span>{filteredAndSortedFiles.length} item{filteredAndSortedFiles.length !== 1 ? 's' : ''}</span>

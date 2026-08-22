@@ -1,6 +1,7 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { Suspense, useState, useMemo, useEffect, useRef } from 'react';
 import { RefreshCw, Search, X, Copy, Check, Package } from 'lucide-react';
 import type { InstalledApp } from '../types';
+import { GridSkeleton } from './Skeleton';
 
 interface AppsExplorerProps {
   appsList: InstalledApp[];
@@ -153,13 +154,11 @@ export default function AppsExplorer({
       </div>
 
       {/* Grid */}
-      <div className="flex-1 overflow-y-auto min-h-0 pr-1">
-        {isAppsLoading && appsList.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center space-y-3 text-slate-400">
-            <RefreshCw className="w-8 h-8 animate-spin text-c2cyan" />
-            <span className="text-xs font-bold uppercase tracking-wider">Enumerating registry...</span>
-          </div>
-        ) : appsList.length === 0 ? (
+      <Suspense fallback={<GridSkeleton cards={8} />}>
+        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+          {isAppsLoading && appsList.length === 0 ? (
+            <GridSkeleton cards={8} />
+          ) : appsList.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center space-y-2 text-slate-500">
             <Package className="w-10 h-10 opacity-20" />
             <span className="text-xs font-semibold text-slate-400">No apps listed</span>
@@ -224,8 +223,9 @@ export default function AppsExplorer({
               );
             })}
           </div>
-        )}
-      </div>
+          )}
+        </div>
+      </Suspense>
     </div>
   );
 }
