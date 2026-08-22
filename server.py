@@ -33,8 +33,8 @@ app = Flask(__name__)
 # Reject oversized request bodies before buffering them (Flask answers 413)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
-# Cap stored command output (must exceed client's JSON_FILES payload ~500 items)
-MAX_LOG_OUTPUT = 512 * 1024
+# Cap stored command output (must exceed client's JSON_FILES payload ~500 items + 303 app icons paginated)
+MAX_LOG_OUTPUT = 4096 * 1024
 
 # === Operator Authentication ===
 OPERATOR_TOKEN = os.getenv("OPERATOR_TOKEN", "")

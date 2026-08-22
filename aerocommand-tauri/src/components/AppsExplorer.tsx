@@ -7,7 +7,9 @@ interface AppsExplorerProps {
   appsList: InstalledApp[];
   isAppsLoading: boolean;
   appIcons: Record<string, string>;
-  executeCommand: (cmd: string, silent?: boolean) => void;
+  executeCommand: (cmd: string, silent?: boolean) => Promise<boolean> | void;
+  hasTarget: boolean;
+  onClearIcons: () => void;
 }
 
 type SortField = 'name' | 'size' | 'date' | 'publisher';
@@ -43,30 +45,63 @@ function parseSizeBytes(sizeStr: string): number {
 }
 
 export default function AppsExplorer({
-  appsList, isAppsLoading, appIcons, executeCommand,
+  appsList, isAppsLoading, appIcons, executeCommand, hasTarget, onClearIcons,
 }: AppsExplorerProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('name');
   const [copiedApp, setCopiedApp] = useState<string | null>(null);
-  const requestedRef = useRef(false);
-  const iconsRequestedRef = useRef(false);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-scan when the tab opens with a fresh target
+  // Auto-scan when the tab opens - waits for hasTarget to avoid the '' race
   useEffect(() => {
-    if (!requestedRef.current && appsList.length === 0 && !isAppsLoading) {
-      requestedRef.current = true;
-      executeCommand('apps', true);
+    if (!hasTarget) return;
+    if (appsList.length === 0 && !isAppsLoading) {
+      // Use promise return to detect ERR_NO_TARGET and retry
+      const p = executeCommand('apps', true) as unknown as Promise<boolean> | boolean;
+      if (p && typeof (p as Promise<boolean>).then === 'function') {
+        (p as Promise<boolean>).then(ok => {
+          if (!ok) {
+            // Retry once after clients settle
+            if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+            retryTimerRef.current = setTimeout(() => executeCommand('apps', true), 1500);
+          }
+        });
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => { if (retryTimerRef.current) clearTimeout(retryTimerRef.current); };
+  }, [hasTarget, appsList.length, isAppsLoading, executeCommand]);
 
-  // Fetch icons once the app list arrives
+  // Fetch icons once the app list arrives - paginated, works with rebuilt client.py (appicons <offset> <limit>)
+  // Falls back to single-shot for old binary that only understands `appicons`
+  const iconsFetchedForRef = useRef<string>('');
+  const ICON_BATCH = 80;
   useEffect(() => {
-    if (!iconsRequestedRef.current && appsList.length > 0) {
-      iconsRequestedRef.current = true;
-      executeCommand('appicons', true);
-    }
-  }, [appsList.length, executeCommand]);
+    if (appsList.length === 0 || !hasTarget) return;
+    const key = appsList.map(a => a.name).join('|').slice(0, 200);
+    const fingerprint = `${appsList.length}:${key}`;
+    if (iconsFetchedForRef.current === fingerprint) return;
+    iconsFetchedForRef.current = fingerprint;
+    onClearIcons();
+    // Try paginated first (new client). If it fails (old client), the error toast will show and we fallback to single shot via next effect tick.
+    let offset = 0;
+    let useSingleShot = false;
+    const fetchBatch = async () => {
+      if (offset >= appsList.length) return;
+      const cmd = useSingleShot ? 'appicons' : `appicons ${offset} ${ICON_BATCH}`;
+      const ok = await (executeCommand(cmd, true) as unknown as Promise<boolean>);
+      // If paginated failed (old client) and we haven't yet tried single shot, fallback
+      if (!ok && !useSingleShot && cmd.startsWith('appicons ')) {
+        useSingleShot = true;
+        iconsFetchedForRef.current = ''; // allow retry
+        // Clear and try single shot once
+        setTimeout(() => executeCommand('appicons', true), 300);
+        return;
+      }
+      offset += ICON_BATCH;
+      if (!useSingleShot && offset < appsList.length) setTimeout(fetchBatch, 350);
+    };
+    fetchBatch();
+  }, [appsList, hasTarget, executeCommand, onClearIcons]);
 
   const filteredApps = useMemo(() => {
     let result = [...appsList];
@@ -93,7 +128,8 @@ export default function AppsExplorer({
   };
 
   const refresh = () => {
-    iconsRequestedRef.current = false;
+    iconsFetchedForRef.current = '';
+    onClearIcons();
     executeCommand('apps', true);
   };
 
@@ -174,14 +210,14 @@ export default function AppsExplorer({
                   className="p-3 bg-c2card border border-c2border hover:border-c2borderlight rounded-xl transition-colors group flex flex-col"
                 >
                   <div className="flex items-start space-x-3">
-                    {/* Icon tile */}
-                    <div className={`w-10 h-10 rounded-lg border flex items-center justify-center shrink-0 font-bold text-sm ${tileColor(app.name)} overflow-hidden`}>
-                      {icon ? (
-                        <img src={icon} alt="" className="w-full h-full object-contain p-1" />
-                      ) : (
-                        initials(app.name)
-                      )}
-                    </div>
+                    {/* Icon - slightly bigger, without container when real icon exists */}
+                    {icon ? (
+                      <img src={icon} alt="" className="w-11 h-11 shrink-0 object-contain drop-shadow-sm" />
+                    ) : (
+                      <div className={`w-11 h-11 rounded-lg border flex items-center justify-center shrink-0 font-bold text-sm ${tileColor(app.name)} overflow-hidden`}>
+                        {initials(app.name)}
+                      </div>
+                    )}
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-bold text-white truncate" title={app.name}>
                         {app.name}
