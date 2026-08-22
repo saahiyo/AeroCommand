@@ -240,11 +240,21 @@ export default function FileExplorer({
     }
   };
 
-  // Batch download selected
-  const downloadSelected = () => {
-    selectedPaths.forEach(path => {
-      executeCommand(`download "${path}"`);
-    });
+  // Batch download selected — sequential with progress + toast
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+  const downloadSelected = async () => {
+    const paths = Array.from(selectedPaths);
+    if (!paths.length) return;
+    setBatchProgress({ done: 0, total: paths.length });
+    for (let i = 0; i < paths.length; i++) {
+      try {
+        await executeCommand(`download "${paths[i]}"`, false);
+      } catch {}
+      setBatchProgress({ done: i + 1, total: paths.length });
+      // small throttle so C2 isn't hammered + 429s avoided (upload limit 10/60s)
+      if (i < paths.length - 1) await new Promise(r => setTimeout(r, 350));
+    }
+    setTimeout(() => setBatchProgress(null), 2500);
   };
 
   // Helper to build clean remote file paths
@@ -539,14 +549,24 @@ export default function FileExplorer({
 
               {/* Batch Action Bar (if items selected) & View Mode */}
               <div className="flex items-center space-x-2 shrink-0">
-                {selectedPaths.size > 0 && (
+                {batchProgress && (
+                  <div className="flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-[11px] font-mono">
+                    <span className="text-emerald-400 font-bold">{batchProgress.done}/{batchProgress.total}</span>
+                    <div className="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div className="h-full bg-emerald-400 transition-all" style={{ width: `${(batchProgress.done / batchProgress.total) * 100}%` }} />
+                    </div>
+                    <span className="text-slate-400">downloading…</span>
+                  </div>
+                )}
+                {selectedPaths.size > 0 && !batchProgress && (
                   <div className="flex items-center space-x-2 bg-c2accent/10 border border-c2accent/30 px-2.5 py-1 rounded-lg">
                     <span className="text-[11px] font-bold text-c2cyan font-mono">
                       {selectedPaths.size} selected
                     </span>
                     <button
                       onClick={downloadSelected}
-                      className="px-2 py-0.5 bg-c2accent hover:bg-c2accenthover text-white text-[10px] font-bold rounded flex items-center space-x-1 transition-colors"
+                      className="px-2 py-0.5 bg-c2accent hover:bg-c2accenthover text-white text-[10px] font-bold rounded flex items-center space-x-1 transition-colors disabled:opacity-50"
+                      disabled={!!batchProgress}
                     >
                       <Download className="w-3 h-3" />
                       <span>Download All</span>

